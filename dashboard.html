@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard • Guardian{% endblock %}
+
+{% block content %}
+
+<section class="dashboard-page">
+
+    <div class="container">
+
+        <div class="dashboard-header">
+
+            <div>
+                <span class="eyebrow">CONTROL CENTER</span>
+
+                <h1>Dashboard</h1>
+
+                <p>
+                    Manage your Discord servers and security settings.
+                </p>
+            </div>
+
+        </div>
+
+
+        {% if guilds %}
+
+        <div class="server-grid">
+
+            {% for guild in guilds %}
+
+            <a
+                href="{{ url_for('server_page', guild_id=guild.id) }}"
+                class="server-card"
+            >
+
+                <div class="server-icon">
+
+                    {% if guild.icon %}
+                        <img
+                            src="https://cdn.discordapp.com/icons/{{ guild.id }}/{{ guild.icon }}.png?size=128"
+                            alt="{{ guild.name }}"
+                        >
+                    {% else %}
+                        <span>
+                            {{ guild.name[0]|upper }}
+                        </span>
+                    {% endif %}
+
+                </div>
+
+
+                <div class="server-info">
+
+                    <h2>{{ guild.name }}</h2>
+
+                    <p>
+                        {% if guild.bot %}
+                            Guardian installed
+                        {% else %}
+                            Guardian not installed
+                        {% endif %}
+                    </p>
+
+                </div>
+
+
+                <div class="server-arrow">
+                    →
+                </div>
+
+            </a>
+
+            {% endfor %}
+
+        </div>
+
+        {% else %}
+
+        <div class="empty-state">
+
+            <div class="empty-icon">
+                —
+            </div>
+
+            <h2>No manageable servers</h2>
+
+            <p>
+                You need Administrator or Manage Server permission
+                and Guardian must be installed on the server.
+            </p>
+
+            <a
+                href="{{ url_for('index') }}"
+                class="btn"
+            >
+                Back to Home
+            </a>
+
+        </div>
+
+        {% endif %}
+
+    </div>
+
+</section>
+
+{% endblock %}
