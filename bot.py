@@ -9,27 +9,69 @@ from datetime import timedelta
 from pathlib import Path
 
 import discord
+import requests
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 from flask import Flask, redirect, render_template, request, session, url_for
-import requests
+
+
+# =========================================================
+# ENVIRONMENT
+# =========================================================
 
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://127.0.0.1:5000").rstrip("/")
-FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "change-me")
+FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "change-this-secret")
+
+CODESPACE_NAME = os.getenv("CODESPACE_NAME")
+CODESPACE_DOMAIN = os.getenv(
+    "GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN",
+    "app.github.dev",
+)
+
+DEFAULT_DASHBOARD_URL = (
+    f"https://{CODESPACE_NAME}-5000.{CODESPACE_DOMAIN}"
+    if CODESPACE_NAME
+    else "http://127.0.0.1:5000"
+)
+
+DASHBOARD_URL = os.getenv(
+    "DASHBOARD_URL",
+    DEFAULT_DASHBOARD_URL,
+).rstrip("/")
+
 
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is missing from .env")
+    raise RuntimeError(
+        "DISCORD_TOKEN is missing from .env"
+    )
+
 if not CLIENT_ID:
-    raise RuntimeError("DISCORD_CLIENT_ID is missing from .env")
+    raise RuntimeError(
+        "DISCORD_CLIENT_ID is missing from .env"
+    )
+
+if not CLIENT_SECRET:
+    raise RuntimeError(
+        "DISCORD_CLIENT_SECRET is missing from .env"
+    )
+
+
+# =========================================================
+# PATHS
+# =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "guardian.db"
+
+
+# =========================================================
+# DISCORD BOT
+# =========================================================
 
 intents = discord.Intents.default()
 intents.members = True
@@ -42,41 +84,43 @@ bot = commands.Bot(
     case_insensitive=True,
 )
 
-db_lock = threading.Lock()
 
-# Anti-spam cache: guild -> user -> timestamps
-spam_cache = defaultdict(lambda: defaultdict(lambda: deque(maxlen=20)))
-anti_spam_cooldown = defaultdict(float)
+# =========================================================
+# FLASK
+# =========================================================
 
-LINK_RE = re.compile(
-    r"(https?://\S+|www\.\S+|discord\.gg/\S+|discord(?:app)?\.com/invite/\S+)",
-    re.IGNORECASE,
+app = Flask(
+    __name__,
+    template_folder=str(BASE_DIR / "templates"),
+    static_folder=str(BASE_DIR / "static"),
 )
 
-DEFAULT_SECURITY = {
-    "anti_spam": 1,
-    "anti_links": 1,
-    "spam_limit": 6,
-    "spam_window": 8,
-    "timeout_minutes": 10,
-    "lockdown": 0,
-}
+app.secret_key = FLASK_SECRET_KEY
 
 
-# -----------------------------
-# Database
-# -----------------------------
+# =========================================================
+# DATABASE
+# =========================================================
+
+db_lock = threading.Lock()
+
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn
+    connection = sqlite3.connect(
+        DB_PATH,
+        timeout=10,
+    )
+
+    connection.row_factory = sqlite3.Row
+
+    return connection
 
 
 def init_db():
     with db_lock:
-        conn = get_db()
-        conn.executescript(
+        connection = get_db()
+
+        connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id INTEGER PRIMARY KEY,
@@ -97,19 +141,48 @@ def init_db():
                 reason TEXT NOT NULL,
                 created_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS security_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                user_id INTEGER,
+                details TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
             """
         )
-        conn.commit()
-        conn.close()
+
+        connection.commit()
+        connection.close()
+
+
+DEFAULT_SECURITY = {
+    "anti_spam": 1,
+    "anti_links": 1,
+    "spam_limit": 6,
+    "spam_window": 8,
+    "timeout_minutes": 10,
+    "lockdown": 0,
+}
 
 
 def ensure_guild(guild_id: int):
     with db_lock:
-        conn = get_db()
-        conn.execute(
+        connection = get_db()
+
+        connection.execute(
             """
             INSERT OR IGNORE INTO guild_settings
-            (guild_id, anti_spam, anti_links, spam_limit, spam_window, timeout_minutes, lockdown)
+            (
+                guild_id,
+                anti_spam,
+                anti_links,
+                spam_limit,
+                spam_window,
+                timeout_minutes,
+                lockdown
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -122,24 +195,34 @@ def ensure_guild(guild_id: int):
                 DEFAULT_SECURITY["lockdown"],
             ),
         )
-        conn.commit()
-        conn.close()
+
+        connection.commit()
+        connection.close()
 
 
 def get_settings(guild_id: int):
     ensure_guild(guild_id)
+
     with db_lock:
-        conn = get_db()
-        row = conn.execute(
-            "SELECT * FROM guild_settings WHERE guild_id = ?",
+        connection = get_db()
+
+        row = connection.execute(
+            """
+            SELECT *
+            FROM guild_settings
+            WHERE guild_id = ?
+            """,
             (guild_id,),
         ).fetchone()
-        conn.close()
+
+        connection.close()
+
     return dict(row)
 
 
 def update_settings(guild_id: int, **values):
     ensure_guild(guild_id)
+
     allowed = {
         "log_channel_id",
         "anti_spam",
@@ -149,1038 +232,2153 @@ def update_settings(guild_id: int, **values):
         "timeout_minutes",
         "lockdown",
     }
-    clean = {k: v for k, v in values.items() if k in allowed}
-    if not clean:
+
+    values = {
+        key: value
+        for key, value in values.items()
+        if key in allowed
+    }
+
+    if not values:
         return
-    columns = ", ".join(f"{key} = ?" for key in clean)
-    params = list(clean.values()) + [guild_id]
+
+    columns = ", ".join(
+        f"{key} = ?"
+        for key in values
+    )
+
+    parameters = list(values.values())
+    parameters.append(guild_id)
+
     with db_lock:
-        conn = get_db()
-        conn.execute(
-            f"UPDATE guild_settings SET {columns} WHERE guild_id = ?",
-            params,
+        connection = get_db()
+
+        connection.execute(
+            f"""
+            UPDATE guild_settings
+            SET {columns}
+            WHERE guild_id = ?
+            """,
+            parameters,
         )
-        conn.commit()
-        conn.close()
+
+        connection.commit()
+        connection.close()
 
 
-def add_warning(guild_id, user_id, moderator_id, reason):
-    now = int(time.time())
+# =========================================================
+# WARNING SYSTEM
+# =========================================================
+
+def add_warning(
+    guild_id: int,
+    user_id: int,
+    moderator_id: int,
+    reason: str,
+):
+    created_at = int(time.time())
+
     with db_lock:
-        conn = get_db()
-        cur = conn.execute(
+        connection = get_db()
+
+        cursor = connection.execute(
             """
-            INSERT INTO warnings (guild_id, user_id, moderator_id, reason, created_at)
+            INSERT INTO warnings
+            (
+                guild_id,
+                user_id,
+                moderator_id,
+                reason,
+                created_at
+            )
             VALUES (?, ?, ?, ?, ?)
             """,
-            (guild_id, user_id, moderator_id, reason, now),
+            (
+                guild_id,
+                user_id,
+                moderator_id,
+                reason,
+                created_at,
+            ),
         )
-        conn.commit()
-        warning_id = cur.lastrowid
-        conn.close()
+
+        connection.commit()
+
+        warning_id = cursor.lastrowid
+
+        connection.close()
+
     return warning_id
 
 
-def get_warnings(guild_id, user_id):
+def get_warnings(
+    guild_id: int,
+    user_id: int,
+):
     with db_lock:
-        conn = get_db()
-        rows = conn.execute(
+        connection = get_db()
+
+        rows = connection.execute(
             """
-            SELECT * FROM warnings
-            WHERE guild_id = ? AND user_id = ?
+            SELECT *
+            FROM warnings
+            WHERE guild_id = ?
+            AND user_id = ?
             ORDER BY id DESC
             """,
-            (guild_id, user_id),
+            (
+                guild_id,
+                user_id,
+            ),
         ).fetchall()
-        conn.close()
+
+        connection.close()
+
     return [dict(row) for row in rows]
 
 
-def clear_warnings(guild_id, user_id):
+def clear_warnings(
+    guild_id: int,
+    user_id: int,
+):
     with db_lock:
-        conn = get_db()
-        cur = conn.execute(
-            "DELETE FROM warnings WHERE guild_id = ? AND user_id = ?",
-            (guild_id, user_id),
+        connection = get_db()
+
+        cursor = connection.execute(
+            """
+            DELETE FROM warnings
+            WHERE guild_id = ?
+            AND user_id = ?
+            """,
+            (
+                guild_id,
+                user_id,
+            ),
         )
-        conn.commit()
-        count = cur.rowcount
-        conn.close()
+
+        connection.commit()
+
+        count = cursor.rowcount
+
+        connection.close()
+
     return count
 
 
-# -----------------------------
-# Discord UI helpers
-# -----------------------------
+# =========================================================
+# SECURITY LOGS
+# =========================================================
 
-def footer_text():
-    return "Guardian • Security first"
+def add_security_log(
+    guild_id: int,
+    event_type: str,
+    details: str,
+    user_id: int | None = None,
+):
+    created_at = int(time.time())
+
+    with db_lock:
+        connection = get_db()
+
+        connection.execute(
+            """
+            INSERT INTO security_logs
+            (
+                guild_id,
+                event_type,
+                user_id,
+                details,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                guild_id,
+                event_type,
+                user_id,
+                details,
+                created_at,
+            ),
+        )
+
+        connection.commit()
+        connection.close()
 
 
-def base_embed(title: str, description: str = "", color: discord.Color | None = None):
+def get_security_logs(
+    guild_id: int,
+    limit: int = 50,
+):
+    with db_lock:
+        connection = get_db()
+
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM security_logs
+            WHERE guild_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (
+                guild_id,
+                limit,
+            ),
+        ).fetchall()
+
+        connection.close()
+
+    return [dict(row) for row in rows]
+
+
+# =========================================================
+# DISCORD EMBEDS
+# =========================================================
+
+def guardian_embed(
+    title: str,
+    description: str = "",
+    color: discord.Color | None = None,
+):
     embed = discord.Embed(
         title=title,
         description=description,
-        color=color or discord.Color.from_rgb(135, 91, 255),
+        color=color or discord.Color.from_rgb(
+            150,
+            150,
+            155,
+        ),
         timestamp=discord.utils.utcnow(),
     )
-    embed.set_footer(text=footer_text())
+
+    embed.set_footer(
+        text="Guardian • Security first"
+    )
+
     return embed
 
 
-def success(title, description):
-    return base_embed(title, description, discord.Color.from_rgb(70, 210, 150))
+def success_embed(title, description):
+    return guardian_embed(
+        title,
+        description,
+        discord.Color.from_rgb(
+            100,
+            190,
+            145,
+        ),
+    )
 
 
 def error_embed(title, description):
-    return base_embed(title, description, discord.Color.from_rgb(245, 92, 92))
+    return guardian_embed(
+        title,
+        description,
+        discord.Color.from_rgb(
+            210,
+            90,
+            90,
+        ),
+    )
 
 
 def warning_embed(title, description):
-    return base_embed(title, description, discord.Color.from_rgb(245, 180, 70))
+    return guardian_embed(
+        title,
+        description,
+        discord.Color.from_rgb(
+            200,
+            165,
+            90,
+        ),
+    )
 
 
 def info_embed(title, description):
-    return base_embed(title, description, discord.Color.from_rgb(85, 165, 255))
+    return guardian_embed(
+        title,
+        description,
+        discord.Color.from_rgb(
+            145,
+            155,
+            170,
+        ),
+    )
 
 
-def code_escape(text: str) -> str:
-    return text.replace("`", "\\`")
-
-
-async def send_ephemeral(interaction: discord.Interaction, embed: discord.Embed):
+async def send_ephemeral(
+    interaction: discord.Interaction,
+    embed: discord.Embed,
+):
     if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(
+            embed=embed,
+            ephemeral=True,
+        )
     else:
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(
+            embed=embed,
+            ephemeral=True,
+        )
 
 
-async def send_log(guild: discord.Guild, embed: discord.Embed):
+# =========================================================
+# MODERATION HELPERS
+# =========================================================
+
+def can_moderate(
+    moderator: discord.Member,
+    target: discord.Member,
+):
+    if target == moderator:
+        return False
+
+    if target == moderator.guild.owner:
+        return False
+
+    if moderator.guild.owner == moderator:
+        return True
+
+    if target == moderator.guild.me:
+        return False
+
+    return moderator.top_role > target.top_role
+
+
+async def send_log(
+    guild: discord.Guild,
+    embed: discord.Embed,
+):
     settings = get_settings(guild.id)
-    channel_id = settings.get("log_channel_id")
+
+    channel_id = settings.get(
+        "log_channel_id"
+    )
+
     if not channel_id:
         return
 
-    channel = guild.get_channel(channel_id)
-    if channel is None:
+    channel = guild.get_channel(
+        channel_id
+    )
+
+    if not channel:
         return
 
     try:
-        await channel.send(embed=embed)
+        await channel.send(
+            embed=embed
+        )
     except discord.HTTPException:
         pass
 
 
-def can_moderate(member: discord.Member, target: discord.Member) -> bool:
-    if target == member:
-        return False
-    if target == member.guild.owner:
-        return False
-    if member.guild.owner == member:
-        return True
-    if target == member.guild.me:
-        return False
-    return member.top_role > target.top_role
-
-
-# -----------------------------
-# Help system
-# -----------------------------
+# =========================================================
+# HELP
+# =========================================================
 
 class HelpView(discord.ui.View):
+
     def __init__(self):
         super().__init__(timeout=180)
 
-    @discord.ui.button(label="Moderation", style=discord.ButtonStyle.secondary)
-    async def moderation(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = base_embed(
-            "🛡️ Moderation",
-            "**Core server moderation commands**\n\n"
+    @discord.ui.button(
+        label="Moderation",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def moderation(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        embed = info_embed(
+            "Moderation",
+            "**Guardian moderation tools**\n\n"
             "`/ban` — Ban a member.\n"
             "`/unban` — Remove a ban.\n"
             "`/kick` — Kick a member.\n"
-            "`/timeout` — Temporarily timeout a member.\n"
+            "`/timeout` — Timeout a member.\n"
             "`/untimeout` — Remove a timeout.\n"
             "`/warn` — Add a warning.\n"
             "`/warnings` — View warnings.\n"
             "`/clearwarnings` — Clear warnings.\n"
-            "`/clear` — Bulk delete recent messages.",
-            discord.Color.from_rgb(135, 91, 255),
+            "`/clear` — Delete recent messages.",
         )
-        await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Security", style=discord.ButtonStyle.secondary)
-    async def security(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = base_embed(
-            "🔐 Security",
-            "**Protection & server control**\n\n"
-            "`/security` — View current security settings.\n"
-            "`/setsecurity` — Configure anti-spam, anti-link and timeout values.\n"
-            "`/setlog` — Choose the moderation log channel.\n"
-            "`/lock` — Lock a text channel.\n"
-            "`/unlock` — Unlock a text channel.\n\n"
-            "**Automatic protection**\n"
-            "• Anti-spam\n"
-            "• Anti-link\n"
-            "• Automatic timeout\n"
-            "• Security event logging",
-            discord.Color.from_rgb(80, 190, 170),
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self,
         )
-        await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Formatting", style=discord.ButtonStyle.secondary)
-    async def formatting(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = base_embed(
-            "✨ Discord Formatting",
-            "**Bold**\n"
-            "*Italic*\n"
-            "__Underline__\n"
-            "~~Strikethrough~~\n"
-            "||Spoiler||\n"
-            "`inline code`\n"
-            "> Block quote\n\n"
-            "```py\nprint(\"Hello Discord\")\n```\n\n"
-            "<https://example.com>\n"
-            "[Example](https://example.com)\n\n"
-            "`<@USER_ID>` — user mention\n"
-            "`<@&ROLE_ID>` — role mention\n"
-            "`<#CHANNEL_ID>` — channel mention\n"
-            "`<t:UNIX:F>` — Discord timestamp\n"
-            "`<t:UNIX:R>` — relative timestamp",
-            discord.Color.from_rgb(235, 170, 90),
-        )
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(view=None)
-
-
-@bot.tree.command(name="help", description="Open Guardian's interactive command guide.")
-async def help_command(interaction: discord.Interaction):
-    embed = base_embed(
-        "Guardian • Help",
-        "A polished **security-first** Discord bot.\n\n"
-        "Use the buttons below to browse commands, security controls, "
-        "and Discord's formatting syntax.\n\n"
-        "```text\n"
-        "Guardian is built to keep moderation fast,\n"
-        "clear and good-looking.\n"
-        "```",
+    @discord.ui.button(
+        label="Security",
+        style=discord.ButtonStyle.secondary,
     )
+    async def security(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        embed = info_embed(
+            "Security",
+            "**Automatic server protection**\n\n"
+            "• Anti-Spam\n"
+            "• Anti-Link\n"
+            "• Automatic Timeout\n"
+            "• Security Logs\n"
+            "• Channel Lockdown\n\n"
+            "`/security` — View protection status.\n"
+            "`/setsecurity` — Configure protection.\n"
+            "`/setlog` — Configure security logs.\n"
+            "`/lock` — Lock a channel.\n"
+            "`/unlock` — Unlock a channel.",
+        )
+
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self,
+        )
+
+    @discord.ui.button(
+        label="Close",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def close(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ):
+        await interaction.response.edit_message(
+            view=None
+        )
+
+
+@bot.tree.command(
+    name="help",
+    description="Open Guardian's command guide.",
+)
+async def help_command(
+    interaction: discord.Interaction,
+):
+    embed = guardian_embed(
+        "Guardian",
+        "**Security-first Discord protection.**\n\n"
+        "Use the buttons below to browse Guardian's "
+        "moderation and security systems.",
+    )
+
     embed.add_field(
-        name="Quick start",
-        value="`/security` • ` /setsecurity` • `/setlog` • `/help`",
+        name="Moderation",
+        value=(
+            "`/ban` ` /kick` ` /timeout` "
+            "`/warn` ` /clear`"
+        ),
         inline=False,
     )
+
     embed.add_field(
-        name="Support style",
-        value="Embeds • Markdown • Mentions • Code blocks • Timestamps",
+        name="Security",
+        value=(
+            "`/security` ` /setsecurity` "
+            "`/setlog` ` /lock` ` /unlock`"
+        ),
         inline=False,
     )
-    await interaction.response.send_message(embed=embed, view=HelpView(), ephemeral=True)
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=HelpView(),
+        ephemeral=True,
+    )
 
 
-# -----------------------------
-# Basic commands
-# -----------------------------
+# =========================================================
+# BASIC COMMANDS
+# =========================================================
 
-@bot.tree.command(name="ping", description="Check Guardian's latency.")
-async def ping(interaction: discord.Interaction):
-    latency = round(bot.latency * 1000)
-    embed = success("🏓 Pong", f"WebSocket latency: **{latency}ms**")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+@bot.tree.command(
+    name="ping",
+    description="Check Guardian's latency.",
+)
+async def ping(
+    interaction: discord.Interaction,
+):
+    latency = round(
+        bot.latency * 1000
+    )
+
+    embed = success_embed(
+        "Pong",
+        f"WebSocket latency: **{latency}ms**",
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True,
+    )
 
 
-@bot.tree.command(name="serverinfo", description="Show information about this server.")
-async def serverinfo(interaction: discord.Interaction):
+@bot.tree.command(
+    name="serverinfo",
+    description="Show server information.",
+)
+async def serverinfo(
+    interaction: discord.Interaction,
+):
     if not interaction.guild:
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used inside a server.",
+            ),
+        )
 
     guild = interaction.guild
-    embed = info_embed("Server Information", f"### {guild.name}")
+
+    embed = info_embed(
+        "Server Information",
+        f"### {guild.name}",
+    )
+
     if guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
-    embed.add_field(name="Members", value=f"`{guild.member_count:,}`", inline=True)
-    embed.add_field(name="Channels", value=f"`{len(guild.channels):,}`", inline=True)
-    embed.add_field(name="Roles", value=f"`{len(guild.roles):,}`", inline=True)
-    embed.add_field(name="Owner", value=f"<@{guild.owner_id}>", inline=True)
-    embed.add_field(name="Guild ID", value=f"`{guild.id}`", inline=True)
-    embed.add_field(name="Created", value=f"<t:{int(guild.created_at.timestamp())}:F>", inline=True)
-    await interaction.response.send_message(embed=embed)
+        embed.set_thumbnail(
+            url=guild.icon.url
+        )
+
+    embed.add_field(
+        name="Members",
+        value=f"`{guild.member_count:,}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Channels",
+        value=f"`{len(guild.channels):,}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Roles",
+        value=f"`{len(guild.roles):,}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Owner",
+        value=f"<@{guild.owner_id}>",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Guild ID",
+        value=f"`{guild.id}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Created",
+        value=(
+            f"<t:{int(guild.created_at.timestamp())}:F>"
+        ),
+        inline=True,
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
-@bot.tree.command(name="userinfo", description="Show information about a member.")
-@app_commands.describe(member="The member to inspect.")
-async def userinfo(interaction: discord.Interaction, member: discord.Member):
-    embed = info_embed("User Information", f"### {member.display_name}")
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="Mention", value=member.mention, inline=True)
-    embed.add_field(name="User ID", value=f"`{member.id}`", inline=True)
-    embed.add_field(name="Joined", value=f"<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "Unknown", inline=True)
-    embed.add_field(name="Account created", value=f"<t:{int(member.created_at.timestamp())}:F>", inline=True)
-    roles = [r.mention for r in member.roles[1:]]
+@bot.tree.command(
+    name="userinfo",
+    description="Show member information.",
+)
+@app_commands.describe(
+    member="The member to inspect.",
+)
+async def userinfo(
+    interaction: discord.Interaction,
+    member: discord.Member,
+):
+    embed = info_embed(
+        "User Information",
+        f"### {member.display_name}",
+    )
+
+    embed.set_thumbnail(
+        url=member.display_avatar.url
+    )
+
+    embed.add_field(
+        name="Mention",
+        value=member.mention,
+        inline=True,
+    )
+
+    embed.add_field(
+        name="User ID",
+        value=f"`{member.id}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Joined",
+        value=(
+            f"<t:{int(member.joined_at.timestamp())}:R>"
+            if member.joined_at
+            else "Unknown"
+        ),
+        inline=True,
+    )
+
+    roles = [
+        role.mention
+        for role in member.roles[1:]
+    ]
+
     embed.add_field(
         name=f"Roles ({len(roles)})",
-        value=" ".join(roles[-15:]) if roles else "`No roles`",
+        value=(
+            " ".join(roles[-15:])
+            if roles
+            else "`No roles`"
+        ),
         inline=False,
     )
-    await interaction.response.send_message(embed=embed)
 
-
-# -----------------------------
-# Moderation commands
-# -----------------------------
-
-@bot.tree.command(name="ban", description="Ban a member from the server.")
-@app_commands.describe(member="Member to ban.", reason="Reason for the ban.")
-@app_commands.default_permissions(ban_members=True)
-async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
-
-    if not can_moderate(interaction.user, member):
-        return await send_ephemeral(interaction, error_embed("Action blocked", "You cannot moderate this member due to role hierarchy."))
-
-    try:
-        await member.ban(reason=f"{reason} • Moderator: {interaction.user} ({interaction.user.id})")
-    except discord.Forbidden:
-        return await send_ephemeral(interaction, error_embed("Permission error", "Guardian cannot ban this member. Check role hierarchy and permissions."))
-    except discord.HTTPException:
-        return await send_ephemeral(interaction, error_embed("Discord error", "Discord rejected the ban request."))
-
-    embed = success(
-        "🔨 Member Banned",
-        f"**Member:** {member.mention}\n"
-        f"**Reason:** {reason}\n"
-        f"**Moderator:** {interaction.user.mention}",
+    await interaction.response.send_message(
+        embed=embed
     )
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
 
 
-@bot.tree.command(name="unban", description="Remove a user from the ban list.")
-@app_commands.describe(user_id="The Discord user ID to unban.", reason="Reason for the unban.")
-@app_commands.default_permissions(ban_members=True)
-async def unban(interaction: discord.Interaction, user_id: str, reason: str = "No reason provided"):
+# =========================================================
+# BAN
+# =========================================================
+
+@bot.tree.command(
+    name="ban",
+    description="Ban a member.",
+)
+@app_commands.describe(
+    member="Member to ban.",
+    reason="Reason for the ban.",
+)
+@app_commands.default_permissions(
+    ban_members=True
+)
+async def ban(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str = "No reason provided",
+):
     if not interaction.guild:
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
+
+    if not isinstance(
+        interaction.user,
+        discord.Member,
+    ):
+        return
+
+    if not can_moderate(
+        interaction.user,
+        member,
+    ):
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Action blocked",
+                "You cannot moderate this member because of role hierarchy.",
+            ),
+        )
 
     try:
-        uid = int(user_id)
-        user = await bot.fetch_user(uid)
-        await interaction.guild.unban(user, reason=f"{reason} • Moderator: {interaction.user}")
-    except ValueError:
-        return await send_ephemeral(interaction, error_embed("Invalid ID", "Please provide a valid numeric Discord user ID."))
-    except discord.NotFound:
-        return await send_ephemeral(interaction, error_embed("Not found", "That user is not currently banned."))
+        await member.ban(
+            reason=(
+                f"{reason} • "
+                f"Moderator: {interaction.user}"
+            )
+        )
+
     except discord.Forbidden:
-        return await send_ephemeral(interaction, error_embed("Permission error", "Guardian cannot remove that ban."))
-    except discord.HTTPException:
-        return await send_ephemeral(interaction, error_embed("Discord error", "Discord rejected the unban request."))
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Permission error",
+                "Guardian cannot ban this member.",
+            ),
+        )
 
-    embed = success(
-        "✅ Ban Removed",
-        f"**User:** `{user}` (`{user.id}`)\n"
-        f"**Reason:** {reason}\n"
-        f"**Moderator:** {interaction.user.mention}",
-    )
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
-
-
-@bot.tree.command(name="kick", description="Kick a member from the server.")
-@app_commands.describe(member="Member to kick.", reason="Reason for the kick.")
-@app_commands.default_permissions(kick_members=True)
-async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
-
-    if not can_moderate(interaction.user, member):
-        return await send_ephemeral(interaction, error_embed("Action blocked", "You cannot moderate this member due to role hierarchy."))
-
-    try:
-        await member.kick(reason=f"{reason} • Moderator: {interaction.user} ({interaction.user.id})")
-    except discord.Forbidden:
-        return await send_ephemeral(interaction, error_embed("Permission error", "Guardian cannot kick this member. Check permissions and role hierarchy."))
-    except discord.HTTPException:
-        return await send_ephemeral(interaction, error_embed("Discord error", "Discord rejected the kick request."))
-
-    embed = success(
-        "👢 Member Kicked",
+    embed = success_embed(
+        "Member Banned",
         f"**Member:** {member.mention}\n"
         f"**Reason:** {reason}\n"
         f"**Moderator:** {interaction.user.mention}",
     )
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
+
+    await interaction.response.send_message(
+        embed=embed
+    )
+
+    await send_log(
+        interaction.guild,
+        embed,
+    )
+
+    add_security_log(
+        interaction.guild.id,
+        "BAN",
+        f"{member} was banned. Reason: {reason}",
+        member.id,
+    )
 
 
-@bot.tree.command(name="timeout", description="Timeout a member.")
+# =========================================================
+# KICK
+# =========================================================
+
+@bot.tree.command(
+    name="kick",
+    description="Kick a member.",
+)
+@app_commands.describe(
+    member="Member to kick.",
+    reason="Reason for the kick.",
+)
+@app_commands.default_permissions(
+    kick_members=True
+)
+async def kick(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str = "No reason provided",
+):
+    if not interaction.guild:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
+
+    if not isinstance(
+        interaction.user,
+        discord.Member,
+    ):
+        return
+
+    if not can_moderate(
+        interaction.user,
+        member,
+    ):
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Action blocked",
+                "You cannot moderate this member because of role hierarchy.",
+            ),
+        )
+
+    try:
+        await member.kick(
+            reason=reason
+        )
+
+    except discord.Forbidden:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Permission error",
+                "Guardian cannot kick this member.",
+            ),
+        )
+
+    embed = success_embed(
+        "Member Kicked",
+        f"**Member:** {member.mention}\n"
+        f"**Reason:** {reason}\n"
+        f"**Moderator:** {interaction.user.mention}",
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
+
+    await send_log(
+        interaction.guild,
+        embed,
+    )
+
+
+# =========================================================
+# TIMEOUT
+# =========================================================
+
+@bot.tree.command(
+    name="timeout",
+    description="Timeout a member.",
+)
 @app_commands.describe(
     member="Member to timeout.",
-    minutes="Timeout duration in minutes.",
+    minutes="Timeout duration.",
     reason="Reason for the timeout.",
 )
-@app_commands.default_permissions(moderate_members=True)
+@app_commands.default_permissions(
+    moderate_members=True
+)
 async def timeout_cmd(
     interaction: discord.Interaction,
     member: discord.Member,
     minutes: app_commands.Range[int, 1, 40320],
     reason: str = "No reason provided",
 ):
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
+    if not interaction.guild:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
 
-    if not can_moderate(interaction.user, member):
-        return await send_ephemeral(interaction, error_embed("Action blocked", "You cannot moderate this member due to role hierarchy."))
+    if not isinstance(
+        interaction.user,
+        discord.Member,
+    ):
+        return
+
+    if not can_moderate(
+        interaction.user,
+        member,
+    ):
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Action blocked",
+                "You cannot moderate this member because of role hierarchy.",
+            ),
+        )
 
     try:
         await member.timeout(
-            timedelta(minutes=minutes),
-            reason=f"{reason} • Moderator: {interaction.user} ({interaction.user.id})",
+            timedelta(
+                minutes=minutes
+            ),
+            reason=reason,
         )
-    except discord.Forbidden:
-        return await send_ephemeral(interaction, error_embed("Permission error", "Guardian cannot timeout this member."))
-    except discord.HTTPException:
-        return await send_ephemeral(interaction, error_embed("Discord error", "Discord rejected the timeout request."))
 
-    embed = success(
-        "⏳ Member Timed Out",
+    except discord.Forbidden:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Permission error",
+                "Guardian cannot timeout this member.",
+            ),
+        )
+
+    embed = success_embed(
+        "Member Timed Out",
         f"**Member:** {member.mention}\n"
         f"**Duration:** `{minutes} minute(s)`\n"
         f"**Reason:** {reason}\n"
         f"**Moderator:** {interaction.user.mention}",
     )
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
+
+    await interaction.response.send_message(
+        embed=embed
+    )
+
+    await send_log(
+        interaction.guild,
+        embed,
+    )
 
 
-@bot.tree.command(name="untimeout", description="Remove a member's timeout.")
-@app_commands.describe(member="Member whose timeout should be removed.", reason="Reason.")
-@app_commands.default_permissions(moderate_members=True)
+# =========================================================
+# UNTIMEOUT
+# =========================================================
+
+@bot.tree.command(
+    name="untimeout",
+    description="Remove a member's timeout.",
+)
+@app_commands.describe(
+    member="Member to restore.",
+    reason="Reason.",
+)
+@app_commands.default_permissions(
+    moderate_members=True
+)
 async def untimeout(
     interaction: discord.Interaction,
     member: discord.Member,
     reason: str = "No reason provided",
 ):
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
+    if not interaction.guild:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
 
-    if not can_moderate(interaction.user, member):
-        return await send_ephemeral(interaction, error_embed("Action blocked", "You cannot moderate this member due to role hierarchy."))
+    if not isinstance(
+        interaction.user,
+        discord.Member,
+    ):
+        return
+
+    if not can_moderate(
+        interaction.user,
+        member,
+    ):
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Action blocked",
+                "You cannot moderate this member.",
+            ),
+        )
 
     try:
-        await member.timeout(None, reason=f"{reason} • Moderator: {interaction.user} ({interaction.user.id})")
-    except discord.Forbidden:
-        return await send_ephemeral(interaction, error_embed("Permission error", "Guardian cannot remove this timeout."))
-    except discord.HTTPException:
-        return await send_ephemeral(interaction, error_embed("Discord error", "Discord rejected the request."))
+        await member.timeout(
+            None,
+            reason=reason,
+        )
 
-    embed = success(
-        "✅ Timeout Removed",
+    except discord.Forbidden:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Permission error",
+                "Guardian cannot remove this timeout.",
+            ),
+        )
+
+    embed = success_embed(
+        "Timeout Removed",
         f"**Member:** {member.mention}\n"
         f"**Reason:** {reason}\n"
         f"**Moderator:** {interaction.user.mention}",
     )
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
-@bot.tree.command(name="warn", description="Warn a member.")
-@app_commands.describe(member="Member to warn.", reason="Reason for the warning.")
-@app_commands.default_permissions(moderate_members=True)
-async def warn(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
+# =========================================================
+# WARNINGS
+# =========================================================
 
-    if not can_moderate(interaction.user, member):
-        return await send_ephemeral(interaction, error_embed("Action blocked", "You cannot warn this member due to role hierarchy."))
+@bot.tree.command(
+    name="warn",
+    description="Warn a member.",
+)
+@app_commands.describe(
+    member="Member to warn.",
+    reason="Reason.",
+)
+@app_commands.default_permissions(
+    moderate_members=True
+)
+async def warn(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str = "No reason provided",
+):
+    if not interaction.guild:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
 
-    warning_id = add_warning(interaction.guild.id, member.id, interaction.user.id, reason)
-    total = len(get_warnings(interaction.guild.id, member.id))
+    if not isinstance(
+        interaction.user,
+        discord.Member,
+    ):
+        return
+
+    if not can_moderate(
+        interaction.user,
+        member,
+    ):
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Action blocked",
+                "You cannot warn this member.",
+            ),
+        )
+
+    warning_id = add_warning(
+        interaction.guild.id,
+        member.id,
+        interaction.user.id,
+        reason,
+    )
+
+    total = len(
+        get_warnings(
+            interaction.guild.id,
+            member.id,
+        )
+    )
 
     embed = warning_embed(
-        "⚠️ Warning Added",
+        "Warning Added",
         f"**Member:** {member.mention}\n"
         f"**Warning:** `#{warning_id}`\n"
-        f"**Total warnings:** `{total}`\n"
+        f"**Total:** `{total}`\n"
         f"**Reason:** {reason}\n"
         f"**Moderator:** {interaction.user.mention}",
     )
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
-@bot.tree.command(name="warnings", description="View a member's warnings.")
-@app_commands.describe(member="Member to inspect.")
-@app_commands.default_permissions(moderate_members=True)
-async def warnings(interaction: discord.Interaction, member: discord.Member):
+@bot.tree.command(
+    name="warnings",
+    description="View a member's warnings.",
+)
+@app_commands.describe(
+    member="Member to inspect.",
+)
+@app_commands.default_permissions(
+    moderate_members=True
+)
+async def warnings(
+    interaction: discord.Interaction,
+    member: discord.Member,
+):
     if not interaction.guild:
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
 
-    rows = get_warnings(interaction.guild.id, member.id)
+    warning_list = get_warnings(
+        interaction.guild.id,
+        member.id,
+    )
+
+    if not warning_list:
+        return await send_ephemeral(
+            interaction,
+            info_embed(
+                "Warnings",
+                f"{member.mention} has no warnings.",
+            ),
+        )
+
+    lines = []
+
+    for warning in warning_list[:10]:
+        lines.append(
+            f"**#{warning['id']}** • "
+            f"<t:{warning['created_at']}:R>\n"
+            f"> {warning['reason']}"
+        )
+
     embed = warning_embed(
-        "⚠️ Warning History",
-        f"**Member:** {member.mention}\n**Total:** `{len(rows)}`",
+        f"Warnings • {member}",
+        "\n\n".join(lines),
     )
 
-    if not rows:
-        embed.description += "\n\nNo warnings found."
-    else:
-        lines = []
-        for row in rows[:10]:
-            reason = row["reason"]
-            moderator = f"<@{row['moderator_id']}>"
-            when = f"<t:{row['created_at']}:R>"
-            lines.append(
-                f"`#{row['id']}` • **{reason}**\n"
-                f"Moderator: {moderator} • {when}"
-            )
-        embed.add_field(name="Recent warnings", value="\n\n".join(lines), inline=False)
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@bot.tree.command(name="clearwarnings", description="Clear all warnings for a member.")
-@app_commands.describe(member="Member whose warnings should be cleared.")
-@app_commands.default_permissions(moderate_members=True)
-async def clearwarnings(interaction: discord.Interaction, member: discord.Member):
-    if not interaction.guild:
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
-
-    count = clear_warnings(interaction.guild.id, member.id)
-    embed = success(
-        "🧹 Warnings Cleared",
-        f"Cleared **{count}** warning(s) for {member.mention}.",
-    )
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
-
-
-@bot.tree.command(name="clear", description="Delete recent messages from the current channel.")
-@app_commands.describe(amount="Number of messages to delete (1-100).")
-@app_commands.default_permissions(manage_messages=True)
-async def clear(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
-    if not isinstance(interaction.channel, discord.TextChannel):
-        return await send_ephemeral(interaction, error_embed("Unsupported channel", "This command requires a standard text channel."))
-
-    await interaction.response.defer(ephemeral=True)
-
-    try:
-        deleted = await interaction.channel.purge(limit=amount)
-    except discord.Forbidden:
-        return await interaction.followup.send(
-            embed=error_embed("Permission error", "Guardian needs Manage Messages and Read Message History."),
-            ephemeral=True,
-        )
-    except discord.HTTPException:
-        return await interaction.followup.send(
-            embed=error_embed("Discord error", "Discord rejected the delete request."),
-            ephemeral=True,
-        )
-
-    await interaction.followup.send(
-        embed=success("🧹 Messages Cleared", f"Deleted **{len(deleted)}** message(s) in {interaction.channel.mention}."),
+    await interaction.response.send_message(
+        embed=embed,
         ephemeral=True,
     )
 
-    log = info_embed(
-        "🧹 Messages Cleared",
-        f"**Channel:** {interaction.channel.mention}\n"
-        f"**Amount:** `{len(deleted)}`\n"
-        f"**Moderator:** {interaction.user.mention}",
+
+@bot.tree.command(
+    name="clearwarnings",
+    description="Clear all warnings for a member.",
+)
+@app_commands.describe(
+    member="Member whose warnings should be cleared.",
+)
+@app_commands.default_permissions(
+    moderate_members=True
+)
+async def clearwarnings(
+    interaction: discord.Interaction,
+    member: discord.Member,
+):
+    if not interaction.guild:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
+
+    count = clear_warnings(
+        interaction.guild.id,
+        member.id,
     )
-    await send_log(interaction.guild, log)
+
+    embed = success_embed(
+        "Warnings Cleared",
+        f"Removed **{count}** warning(s) from {member.mention}.",
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
-# -----------------------------
-# Channel lock
-# -----------------------------
+# =========================================================
+# CLEAR
+# =========================================================
 
-async def set_channel_lock(channel: discord.TextChannel, locked: bool):
+@bot.tree.command(
+    name="clear",
+    description="Delete recent messages.",
+)
+@app_commands.describe(
+    amount="Number of messages to delete.",
+)
+@app_commands.default_permissions(
+    manage_messages=True
+)
+async def clear(
+    interaction: discord.Interaction,
+    amount: app_commands.Range[int, 1, 100],
+):
+    if not isinstance(
+        interaction.channel,
+        discord.TextChannel,
+    ):
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command requires a text channel.",
+            ),
+        )
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    try:
+        deleted = await interaction.channel.purge(
+            limit=amount
+        )
+
+    except discord.Forbidden:
+        return await interaction.followup.send(
+            embed=error_embed(
+                "Permission error",
+                "Guardian cannot delete messages here.",
+            ),
+            ephemeral=True,
+        )
+
+    embed = success_embed(
+        "Messages Cleared",
+        f"Deleted **{len(deleted)}** message(s).",
+    )
+
+    await interaction.followup.send(
+        embed=embed,
+        ephemeral=True,
+    )
+
+
+# =========================================================
+# LOCK / UNLOCK
+# =========================================================
+
+async def set_channel_lock(
+    channel: discord.TextChannel,
+    locked: bool,
+):
     everyone = channel.guild.default_role
-    overwrite = channel.overwrites_for(everyone)
-    overwrite.send_messages = False if locked else None
-    overwrite.add_reactions = False if locked else None
+
+    overwrite = channel.overwrites_for(
+        everyone
+    )
+
+    overwrite.send_messages = (
+        False if locked else None
+    )
+
     await channel.set_permissions(
         everyone,
         overwrite=overwrite,
-        reason="Guardian security lock" if locked else "Guardian security unlock",
     )
 
 
-@bot.tree.command(name="lock", description="Lock the current text channel.")
-@app_commands.default_permissions(manage_channels=True)
-async def lock(interaction: discord.Interaction):
-    if not isinstance(interaction.channel, discord.TextChannel):
-        return await send_ephemeral(interaction, error_embed("Unsupported channel", "This command requires a standard text channel."))
+@bot.tree.command(
+    name="lock",
+    description="Lock the current channel.",
+)
+@app_commands.default_permissions(
+    manage_channels=True
+)
+async def lock(
+    interaction: discord.Interaction,
+):
+    if not isinstance(
+        interaction.channel,
+        discord.TextChannel,
+    ):
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command requires a text channel.",
+            ),
+        )
 
     try:
-        await set_channel_lock(interaction.channel, True)
+        await set_channel_lock(
+            interaction.channel,
+            True,
+        )
+
     except discord.Forbidden:
-        return await send_ephemeral(interaction, error_embed("Permission error", "Guardian cannot change permissions in this channel."))
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Permission error",
+                "Guardian cannot lock this channel.",
+            ),
+        )
 
     embed = warning_embed(
-        "🔒 Channel Locked",
-        f"{interaction.channel.mention} is now locked for `@everyone`.\n\n"
-        "```text\n"
-        "Only members with an explicit permission override\n"
-        "or moderation permissions should be able to speak.\n"
-        "```",
+        "Channel Locked",
+        f"{interaction.channel.mention} is now locked.\n\n"
+        "> New messages are temporarily disabled.",
     )
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
-@bot.tree.command(name="unlock", description="Unlock the current text channel.")
-@app_commands.default_permissions(manage_channels=True)
-async def unlock(interaction: discord.Interaction):
-    if not isinstance(interaction.channel, discord.TextChannel):
-        return await send_ephemeral(interaction, error_embed("Unsupported channel", "This command requires a standard text channel."))
+@bot.tree.command(
+    name="unlock",
+    description="Unlock the current channel.",
+)
+@app_commands.default_permissions(
+    manage_channels=True
+)
+async def unlock(
+    interaction: discord.Interaction,
+):
+    if not isinstance(
+        interaction.channel,
+        discord.TextChannel,
+    ):
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command requires a text channel.",
+            ),
+        )
 
     try:
-        await set_channel_lock(interaction.channel, False)
+        await set_channel_lock(
+            interaction.channel,
+            False,
+        )
+
     except discord.Forbidden:
-        return await send_ephemeral(interaction, error_embed("Permission error", "Guardian cannot change permissions in this channel."))
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Permission error",
+                "Guardian cannot unlock this channel.",
+            ),
+        )
 
-    embed = success(
-        "🔓 Channel Unlocked",
-        f"{interaction.channel.mention} is open again for `@everyone`.",
+    embed = success_embed(
+        "Channel Unlocked",
+        f"{interaction.channel.mention} is available again.",
     )
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
-# -----------------------------
-# Security configuration
-# -----------------------------
+# =========================================================
+# SECURITY SETTINGS
+# =========================================================
 
-@bot.tree.command(name="security", description="Show the current security configuration.")
-async def security(interaction: discord.Interaction):
-    if not interaction.guild:
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
-
-    settings = get_settings(interaction.guild.id)
-    log_channel = f"<#{settings['log_channel_id']}>" if settings["log_channel_id"] else "`Not configured`"
-
-    embed = info_embed("🔐 Security Status", f"Security profile for **{interaction.guild.name}**")
-    embed.add_field(name="Anti-spam", value="`ON`" if settings["anti_spam"] else "`OFF`", inline=True)
-    embed.add_field(name="Anti-link", value="`ON`" if settings["anti_links"] else "`OFF`", inline=True)
-    embed.add_field(name="Lockdown", value="`ON`" if settings["lockdown"] else "`OFF`", inline=True)
-    embed.add_field(name="Spam limit", value=f"`{settings['spam_limit']} messages`", inline=True)
-    embed.add_field(name="Spam window", value=f"`{settings['spam_window']} seconds`", inline=True)
-    embed.add_field(name="Auto-timeout", value=f"`{settings['timeout_minutes']} min`", inline=True)
-    embed.add_field(name="Log channel", value=log_channel, inline=False)
-    await interaction.response.send_message(embed=embed)
-
-
-@bot.tree.command(name="setsecurity", description="Configure Guardian's security settings.")
-@app_commands.describe(
-    anti_spam="Enable or disable anti-spam.",
-    anti_links="Enable or disable link blocking.",
-    spam_limit="Messages needed within the spam window.",
-    spam_window="Spam detection window in seconds.",
-    timeout_minutes="Automatic timeout length when spam is detected.",
+@bot.tree.command(
+    name="security",
+    description="View current security settings.",
 )
-@app_commands.default_permissions(manage_guild=True)
-async def setsecurity(
+async def security(
     interaction: discord.Interaction,
-    anti_spam: bool,
-    anti_links: bool,
-    spam_limit: app_commands.Range[int, 3, 20],
-    spam_window: app_commands.Range[int, 3, 30],
-    timeout_minutes: app_commands.Range[int, 1, 60],
 ):
     if not interaction.guild:
-        return await send_ephemeral(interaction, error_embed("Unavailable", "This command can only be used in a server."))
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
+
+    settings = get_settings(
+        interaction.guild.id
+    )
+
+    def status(value):
+        return "ON" if value else "OFF"
+
+    embed = info_embed(
+        "Security Status",
+        "### Guardian Protection\n"
+        "> Current protection settings for this server.",
+    )
+
+    embed.add_field(
+        name="Anti-Spam",
+        value=f"`{status(settings['anti_spam'])}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Anti-Link",
+        value=f"`{status(settings['anti_links'])}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Lockdown",
+        value=f"`{status(settings['lockdown'])}`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Spam Limit",
+        value=f"`{settings['spam_limit']} messages`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Spam Window",
+        value=f"`{settings['spam_window']} seconds`",
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Auto Timeout",
+        value=f"`{settings['timeout_minutes']} minutes`",
+        inline=True,
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
+
+
+@bot.tree.command(
+    name="setsecurity",
+    description="Configure Guardian security.",
+)
+@app_commands.describe(
+    anti_spam="Enable or disable anti-spam.",
+    anti_links="Enable or disable anti-link.",
+    spam_limit="Messages allowed in the spam window.",
+    spam_window="Spam detection window in seconds.",
+    timeout_minutes="Automatic timeout duration.",
+)
+@app_commands.default_permissions(
+    manage_guild=True
+)
+async def setsecurity(
+    interaction: discord.Interaction,
+    anti_spam: bool | None = None,
+    anti_links: bool | None = None,
+    spam_limit: app_commands.Range[int, 2, 20] | None = None,
+    spam_window: app_commands.Range[int, 2, 30] | None = None,
+    timeout_minutes: app_commands.Range[int, 1, 1440] | None = None,
+):
+    if not interaction.guild:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
+
+    values = {}
+
+    if anti_spam is not None:
+        values["anti_spam"] = int(
+            anti_spam
+        )
+
+    if anti_links is not None:
+        values["anti_links"] = int(
+            anti_links
+        )
+
+    if spam_limit is not None:
+        values["spam_limit"] = int(
+            spam_limit
+        )
+
+    if spam_window is not None:
+        values["spam_window"] = int(
+            spam_window
+        )
+
+    if timeout_minutes is not None:
+        values["timeout_minutes"] = int(
+            timeout_minutes
+        )
+
+    if not values:
+        return await send_ephemeral(
+            interaction,
+            info_embed(
+                "No changes",
+                "No security values were provided.",
+            ),
+        )
 
     update_settings(
         interaction.guild.id,
-        anti_spam=int(anti_spam),
-        anti_links=int(anti_links),
-        spam_limit=int(spam_limit),
-        spam_window=int(spam_window),
-        timeout_minutes=int(timeout_minutes),
+        **values,
     )
 
-    embed = success(
-        "⚙️ Security Updated",
-        "Guardian's security settings were updated successfully.",
+    embed = success_embed(
+        "Security Updated",
+        "**Guardian security settings have been updated.**",
     )
-    embed.add_field(name="Anti-spam", value="`ON`" if anti_spam else "`OFF`", inline=True)
-    embed.add_field(name="Anti-link", value="`ON`" if anti_links else "`OFF`", inline=True)
-    embed.add_field(name="Spam limit", value=f"`{spam_limit}`", inline=True)
-    embed.add_field(name="Window", value=f"`{spam_window}s`", inline=True)
-    embed.add_field(name="Auto-timeout", value=f"`{timeout_minutes}m`", inline=True)
-    await interaction.response.send_message(embed=embed)
-    await send_log(interaction.guild, embed)
 
-
-@bot.tree.command(name="setlog", description="Set the current channel as Guardian's security log.")
-@app_commands.default_permissions(manage_guild=True)
-async def setlog(interaction: discord.Interaction):
-    if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
-        return await send_ephemeral(interaction, error_embed("Unavailable", "Run this command in a server text channel."))
-
-    update_settings(interaction.guild.id, log_channel_id=interaction.channel.id)
-
-    embed = success(
-        "📋 Log Channel Updated",
-        f"Security and moderation logs will be sent to {interaction.channel.mention}.",
+    await interaction.response.send_message(
+        embed=embed
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# -----------------------------
-# Anti-spam / anti-link
-# -----------------------------
+# =========================================================
+# LOG CHANNEL
+# =========================================================
 
-def mark_spam(guild_id: int, user_id: int) -> tuple[int, list[float]]:
-    now = time.monotonic()
-    queue = spam_cache[guild_id][user_id]
-    queue.append(now)
-    return len(queue), list(queue)
+@bot.tree.command(
+    name="setlog",
+    description="Set the security log channel.",
+)
+@app_commands.describe(
+    channel="Channel where Guardian should send logs.",
+)
+@app_commands.default_permissions(
+    manage_guild=True
+)
+async def setlog(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+):
+    if not interaction.guild:
+        return await send_ephemeral(
+            interaction,
+            error_embed(
+                "Unavailable",
+                "This command can only be used in a server.",
+            ),
+        )
+
+    update_settings(
+        interaction.guild.id,
+        log_channel_id=channel.id,
+    )
+
+    embed = success_embed(
+        "Log Channel Updated",
+        f"Security events will now be sent to {channel.mention}.",
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
-async def auto_timeout(member: discord.Member, minutes: int, reason: str):
-    try:
-        await member.timeout(timedelta(minutes=minutes), reason=reason)
-        return True
-    except (discord.Forbidden, discord.HTTPException):
-        return False
+# =========================================================
+# ANTI-SPAM
+# =========================================================
+
+spam_cache = defaultdict(
+    lambda: defaultdict(
+        lambda: deque(
+            maxlen=30
+        )
+    )
+)
+
+spam_cooldown = defaultdict(
+    float
+)
+
+
+LINK_RE = re.compile(
+    r"(https?://\S+|www\.\S+|discord\.gg/\S+|discord(?:app)?\.com/invite/\S+)",
+    re.IGNORECASE,
+)
 
 
 @bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
-        await bot.process_commands(message)
+async def on_message(
+    message: discord.Message,
+):
+    if message.author.bot:
         return
 
-    ensure_guild(message.guild.id)
-    settings = get_settings(message.guild.id)
-
-    # Ignore moderators for automated moderation.
-    if isinstance(message.author, discord.Member):
-        bypass = (
-            message.author.guild_permissions.manage_messages
-            or message.author.guild_permissions.manage_guild
-            or message.author.guild_permissions.administrator
+    if not message.guild:
+        await bot.process_commands(
+            message
         )
-    else:
-        bypass = False
-
-    # Anti-link
-    if settings["anti_links"] and not bypass and LINK_RE.search(message.content):
-        try:
-            await message.delete()
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            pass
-
-        embed = warning_embed(
-            "🔗 Link Blocked",
-            f"{message.author.mention}, links are currently restricted in this server.\n\n"
-            "Use **#trusted-links** or ask a moderator for permission.",
-        )
-        try:
-            warning_message = await message.channel.send(embed=embed, delete_after=7)
-        except discord.HTTPException:
-            warning_message = None
-
-        log = warning_embed(
-            "🔗 Link Blocked",
-            f"**User:** {message.author.mention}\n"
-            f"**Channel:** {message.channel.mention}\n"
-            f"**Content:** `Link content removed`\n"
-            f"**At:** <t:{int(time.time())}:F>",
-        )
-        await send_log(message.guild, log)
-        await bot.process_commands(message)
         return
 
-    # Anti-spam
-    if settings["anti_spam"] and not bypass:
-        count, times = mark_spam(message.guild.id, message.author.id)
-        window = settings["spam_window"]
-        while times and time.monotonic() - times[0] > window:
-            times.pop(0)
+    settings = get_settings(
+        message.guild.id
+    )
 
-        if len(times) >= settings["spam_limit"]:
-            now = time.monotonic()
-            key = (message.guild.id, message.author.id)
+    # -------------------------
+    # Anti-Link
+    # -------------------------
 
-            if now - anti_spam_cooldown[key] > 15:
-                anti_spam_cooldown[key] = now
+    if (
+        settings["anti_links"]
+        and LINK_RE.search(
+            message.content
+        )
+    ):
+        if (
+            isinstance(
+                message.author,
+                discord.Member,
+            )
+            and not message.author.guild_permissions.manage_messages
+        ):
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
 
-                try:
-                    await message.delete()
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    pass
-
-                if isinstance(message.author, discord.Member):
-                    success_timeout = await auto_timeout(
-                        message.author,
-                        settings["timeout_minutes"],
-                        "Guardian anti-spam protection",
-                    )
-                else:
-                    success_timeout = False
-
-                title = "🚨 Anti-spam Triggered"
-                desc = (
-                    f"**User:** {message.author.mention}\n"
-                    f"**Channel:** {message.channel.mention}\n"
-                    f"**Detected:** `{len(times)} messages / {window}s`\n"
-                    f"**Action:** `{'Timeout' if success_timeout else 'Message removal only'}`"
+            try:
+                await message.channel.send(
+                    f"{message.author.mention} "
+                    "**link blocked.**",
+                    delete_after=4,
                 )
-                log = warning_embed(title, desc)
-                await send_log(message.guild, log)
+            except discord.HTTPException:
+                pass
 
-    await bot.process_commands(message)
+            add_security_log(
+                message.guild.id,
+                "ANTI_LINK",
+                f"Blocked link from {message.author}",
+                message.author.id,
+            )
 
+    # -------------------------
+    # Anti-Spam
+    # -------------------------
 
-# -----------------------------
-# Presence / startup
-# -----------------------------
+    if settings["anti_spam"]:
+        now = time.monotonic()
 
-@bot.event
-async def on_guild_join(guild: discord.Guild):
-    ensure_guild(guild.id)
-    embed = success(
-        "👋 Guardian is online",
-        f"Thanks for adding Guardian to **{guild.name}**.\n\n"
-        "Run `/help` to get started.",
+        timestamps = spam_cache[
+            message.guild.id
+        ][message.author.id]
+
+        timestamps.append(now)
+
+        while timestamps and (
+            now - timestamps[0]
+            > settings["spam_window"]
+        ):
+            timestamps.popleft()
+
+        if (
+            len(timestamps)
+            >= settings["spam_limit"]
+        ):
+            cooldown_key = (
+                message.guild.id,
+                message.author.id,
+            )
+
+            if (
+                now
+                - spam_cooldown[cooldown_key]
+                > settings["spam_window"]
+            ):
+                spam_cooldown[
+                    cooldown_key
+                ] = now
+
+                if isinstance(
+                    message.author,
+                    discord.Member,
+                ):
+                    if not message.author.guild_permissions.manage_messages:
+                        try:
+                            await message.author.timeout(
+                                timedelta(
+                                    minutes=settings[
+                                        "timeout_minutes"
+                                    ]
+                                ),
+                                reason="Guardian Anti-Spam",
+                            )
+
+                            embed = warning_embed(
+                                "Anti-Spam Triggered",
+                                f"{message.author.mention} "
+                                f"was automatically timed out.\n\n"
+                                f"**Duration:** "
+                                f"`{settings['timeout_minutes']} minutes`",
+                            )
+
+                            await send_log(
+                                message.guild,
+                                embed,
+                            )
+
+                            add_security_log(
+                                message.guild.id,
+                                "ANTI_SPAM",
+                                (
+                                    f"{message.author} "
+                                    f"was automatically timed out."
+                                ),
+                                message.author.id,
+                            )
+
+                        except discord.HTTPException:
+                            pass
+
+    await bot.process_commands(
+        message
     )
-    # Choose a writable system/general channel.
-    channel = guild.system_channel
-    if channel is None:
-        for candidate in guild.text_channels:
-            if candidate.permissions_for(guild.me).send_messages:
-                channel = candidate
-                break
-    if channel:
-        try:
-            await channel.send(embed=embed)
-        except discord.HTTPException:
-            pass
 
+
+# =========================================================
+# DISCORD EVENTS
+# =========================================================
 
 @bot.event
 async def on_ready():
     init_db()
+
     try:
         synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} application commands.")
-    except Exception as exc:
-        print(f"Command sync error: {exc}")
 
-    await bot.change_presence(
-        activity=discord.Activity(
-            type=discord.ActivityType.watching,
-            name="your server security",
+        print(
+            f"[Guardian] Synced {len(synced)} slash command(s)."
         )
+
+    except Exception as error:
+        print(
+            f"[Guardian] Slash command sync failed: {error}"
+        )
+
+    print(
+        f"[Guardian] Logged in as {bot.user}"
     )
-    print(f"Logged in as {bot.user} ({bot.user.id})")
-    print(f"Dashboard: {DASHBOARD_URL}")
+
+    print(
+        f"[Guardian] Dashboard: {DASHBOARD_URL}"
+    )
 
 
-# -----------------------------
-# Flask dashboard
-# -----------------------------
-
-app = Flask(
-    __name__,
-    template_folder=str(BASE_DIR / "templates"),
-    static_folder=str(BASE_DIR / "static"),
-)
-app.secret_key = FLASK_SECRET_KEY
+@bot.event
+async def on_guild_join(
+    guild: discord.Guild,
+):
+    ensure_guild(
+        guild.id
+    )
 
 
-def dashboard_oauth_url():
-    redirect_uri = f"{DASHBOARD_URL}/callback"
-    scope = "identify guilds"
+# =========================================================
+# WEB HELPERS
+# =========================================================
+
+def oauth_redirect_uri():
+    return (
+        f"{DASHBOARD_URL}/callback"
+    )
+
+
+def discord_oauth_url():
     return (
         "https://discord.com/oauth2/authorize"
         f"?client_id={CLIENT_ID}"
         "&response_type=code"
-        f"&redirect_uri={requests.utils.quote(redirect_uri, safe='')}"
-        f"&scope={requests.utils.quote(scope)}"
+        f"&redirect_uri={oauth_redirect_uri()}"
+        "&scope=identify%20guilds"
     )
 
 
-def oauth_token(code):
-    data = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": f"{DASHBOARD_URL}/callback",
+def get_current_user():
+    return session.get(
+        "user"
+    )
+
+
+def get_user_guilds():
+    return session.get(
+        "guilds",
+        [],
+    )
+
+
+def can_manage_guild(
+    guild_data,
+):
+    permissions = int(
+        guild_data.get(
+            "permissions",
+            0,
+        )
+    )
+
+    administrator = (
+        permissions & 0x8
+    )
+
+    manage_guild = (
+        permissions & 0x20
+    )
+
+    return bool(
+        administrator
+        or manage_guild
+    )
+
+
+def get_managed_guilds():
+    managed = []
+
+    bot_guild_ids = {
+        guild.id
+        for guild in bot.guilds
     }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    response = requests.post(
-        "https://discord.com/api/oauth2/token",
-        data=data,
-        headers=headers,
-        timeout=10,
-    )
-    response.raise_for_status()
-    return response.json()
+
+    for guild_data in get_user_guilds():
+        try:
+            guild_id = int(
+                guild_data["id"]
+            )
+        except (
+            KeyError,
+            ValueError,
+            TypeError,
+        ):
+            continue
+
+        if (
+            guild_id in bot_guild_ids
+            and can_manage_guild(
+                guild_data
+            )
+        ):
+            managed.append(
+                guild_data
+            )
+
+    return managed
 
 
-def discord_api(endpoint, token):
-    response = requests.get(
-        f"https://discord.com/api/v10{endpoint}",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=10,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def managed_guilds():
-    if "oauth_token" not in session:
-        return []
-
-    user_guilds = discord_api("/users/@me/guilds", session["oauth_token"])
-    bot_guild_ids = {str(guild.id) for guild in bot.guilds}
-
-    result = []
-    ADMIN = 0x8
-
-    for guild in user_guilds:
-        perms = int(guild.get("permissions", 0))
-        owner = bool(guild.get("owner"))
-        if owner or (perms & ADMIN) == ADMIN:
-            guild["bot_present"] = str(guild["id"]) in bot_guild_ids
-            result.append(guild)
-
-    return result
-
-
-def selected_guild(guild_id):
-    for guild in managed_guilds():
-        if str(guild["id"]) == str(guild_id):
+def find_guild(
+    guild_id: int,
+):
+    for guild in get_managed_guilds():
+        if int(
+            guild["id"]
+        ) == guild_id:
             return guild
+
     return None
 
 
+# =========================================================
+# WEB ROUTES
+# =========================================================
+
 @app.route("/")
 def index():
-    if "oauth_token" not in session:
-        return render_template("index.html", user=None, guilds=[])
-
-    try:
-        user = discord_api("/users/@me", session["oauth_token"])
-        guilds = managed_guilds()
-    except Exception:
-        session.clear()
-        return redirect(url_for("index"))
-
-    return render_template("index.html", user=user, guilds=guilds)
+    return render_template(
+        "index.html",
+        user=get_current_user(),
+    )
 
 
 @app.route("/login")
 def login():
-    return redirect(dashboard_oauth_url())
+    return redirect(
+        discord_oauth_url()
+    )
 
 
 @app.route("/callback")
 def callback():
-    code = request.args.get("code")
-    if not code:
-        return redirect(url_for("index"))
+    code = request.args.get(
+        "code"
+    )
 
-    try:
-        token_data = oauth_token(code)
-        session["oauth_token"] = token_data["access_token"]
-        session["token_type"] = token_data.get("token_type", "Bearer")
-    except Exception as exc:
+    if not code:
         return render_template(
             "error.html",
-            title="Authentication failed",
-            message=f"Discord OAuth2 could not be completed. {exc}",
-        )
+            message="Missing OAuth2 authorization code.",
+        ), 400
 
-    return redirect(url_for("index"))
+    token_response = requests.post(
+        "https://discord.com/api/oauth2/token",
+        data={
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": oauth_redirect_uri(),
+        },
+        headers={
+            "Content-Type": (
+                "application/x-www-form-urlencoded"
+            )
+        },
+        timeout=15,
+    )
+
+    if token_response.status_code != 200:
+        return render_template(
+            "error.html",
+            message="Discord OAuth2 authorization failed.",
+        ), 400
+
+    token_data = token_response.json()
+
+    access_token = token_data.get(
+        "access_token"
+    )
+
+    if not access_token:
+        return render_template(
+            "error.html",
+            message="Discord did not return an access token.",
+        ), 400
+
+    headers = {
+        "Authorization": (
+            f"Bearer {access_token}"
+        )
+    }
+
+    user_response = requests.get(
+        "https://discord.com/api/users/@me",
+        headers=headers,
+        timeout=15,
+    )
+
+    guild_response = requests.get(
+        "https://discord.com/api/users/@me/guilds",
+        headers=headers,
+        timeout=15,
+    )
+
+    if (
+        user_response.status_code != 200
+        or guild_response.status_code != 200
+    ):
+        return render_template(
+            "error.html",
+            message="Unable to retrieve your Discord account.",
+        ), 400
+
+    session["user"] = (
+        user_response.json()
+    )
+
+    session["guilds"] = (
+        guild_response.json()
+    )
+
+    return redirect(
+        url_for("dashboard")
+    )
 
 
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("index"))
 
-
-@app.route("/server/<int:guild_id>", methods=["GET", "POST"])
-def server_dashboard(guild_id: int):
-    if "oauth_token" not in session:
-        return redirect(url_for("login"))
-
-    guild = selected_guild(guild_id)
-    if not guild:
-        return render_template(
-            "error.html",
-            title="Access denied",
-            message="You need Administrator-level access to manage this server.",
-        )
-
-    if not guild["bot_present"]:
-        return render_template(
-            "error.html",
-            title="Guardian not installed",
-            message="Guardian is not in this server yet.",
-        )
-
-    if request.method == "POST":
-        form = request.form
-
-        update_settings(
-            guild_id,
-            anti_spam=1 if form.get("anti_spam") == "on" else 0,
-            anti_links=1 if form.get("anti_links") == "on" else 0,
-            lockdown=1 if form.get("lockdown") == "on" else 0,
-            spam_limit=max(3, min(20, int(form.get("spam_limit", 6)))),
-            spam_window=max(3, min(30, int(form.get("spam_window", 8)))),
-            timeout_minutes=max(1, min(60, int(form.get("timeout_minutes", 10)))),
-        )
-
-        log_channel_raw = form.get("log_channel_id", "")
-        log_channel_id = int(log_channel_raw) if log_channel_raw.isdigit() else None
-        update_settings(guild_id, log_channel_id=log_channel_id)
-
-        return redirect(url_for("server_dashboard", guild_id=guild_id, saved=1))
-
-    settings = get_settings(guild_id)
-    discord_guild = bot.get_guild(guild_id)
-
-    channels = []
-    if discord_guild:
-        channels = [
-            c for c in discord_guild.text_channels
-            if c.permissions_for(discord_guild.me).send_messages
-        ]
-
-    return render_template(
-        "server.html",
-        user=discord_api("/users/@me", session["oauth_token"]),
-        guild=guild,
-        settings=settings,
-        channels=channels,
-        saved=request.args.get("saved") == "1",
+    return redirect(
+        url_for("index")
     )
 
 
-def start_flask():
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+@app.route("/dashboard")
+def dashboard():
+    user = get_current_user()
+
+    if not user:
+        return redirect(
+            url_for("login")
+        )
+
+    guilds = get_managed_guilds()
+
+    return render_template(
+        "dashboard.html",
+        user=user,
+        guilds=guilds,
+    )
 
 
-def main():
+@app.route("/server/<int:guild_id>")
+def server_dashboard(
+    guild_id: int,
+):
+    user = get_current_user()
+
+    if not user:
+        return redirect(
+            url_for("login")
+        )
+
+    guild_data = find_guild(
+        guild_id
+    )
+
+    if not guild_data:
+        return render_template(
+            "error.html",
+            message="You do not have access to this server.",
+        ), 403
+
+    guild = bot.get_guild(
+        guild_id
+    )
+
+    if not guild:
+        return render_template(
+            "error.html",
+            message="Guardian is not connected to this server.",
+        ), 404
+
+    settings = get_settings(
+        guild_id
+    )
+
+    logs = get_security_logs(
+        guild_id,
+        30,
+    )
+
+    channels = [
+        channel
+        for channel in guild.text_channels
+    ]
+
+    return render_template(
+        "server.html",
+        user=user,
+        guild=guild,
+        guild_data=guild_data,
+        settings=settings,
+        logs=logs,
+        channels=channels,
+    )
+
+
+@app.route(
+    "/server/<int:guild_id>/settings",
+    methods=["POST"],
+)
+def save_server_settings(
+    guild_id: int,
+):
+    user = get_current_user()
+
+    if not user:
+        return redirect(
+            url_for("login")
+        )
+
+    guild_data = find_guild(
+        guild_id
+    )
+
+    if not guild_data:
+        return render_template(
+            "error.html",
+            message="You do not have access to this server.",
+        ), 403
+
+    anti_spam = (
+        1
+        if request.form.get(
+            "anti_spam"
+        )
+        else 0
+    )
+
+    anti_links = (
+        1
+        if request.form.get(
+            "anti_links"
+        )
+        else 0
+    )
+
+    try:
+        spam_limit = max(
+            2,
+            min(
+                20,
+                int(
+                    request.form.get(
+                        "spam_limit",
+                        6,
+                    )
+                ),
+            ),
+        )
+
+        spam_window = max(
+            2,
+            min(
+                30,
+                int(
+                    request.form.get(
+                        "spam_window",
+                        8,
+                    )
+                ),
+            ),
+        )
+
+        timeout_minutes = max(
+            1,
+            min(
+                1440,
+                int(
+                    request.form.get(
+                        "timeout_minutes",
+                        10,
+                    )
+                ),
+            ),
+        )
+
+    except ValueError:
+        return render_template(
+            "error.html",
+            message="Invalid security settings.",
+        ), 400
+
+    log_channel_id = request.form.get(
+        "log_channel_id"
+    )
+
+    try:
+        log_channel_id = (
+            int(log_channel_id)
+            if log_channel_id
+            else None
+        )
+    except ValueError:
+        log_channel_id = None
+
+    update_settings(
+        guild_id,
+        anti_spam=anti_spam,
+        anti_links=anti_links,
+        spam_limit=spam_limit,
+        spam_window=spam_window,
+        timeout_minutes=timeout_minutes,
+        log_channel_id=log_channel_id,
+    )
+
+    return redirect(
+        url_for(
+            "server_dashboard",
+            guild_id=guild_id,
+        )
+    )
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+@app.errorhandler(500)
+def internal_error(error):
+    return render_template(
+        "error.html",
+        message="An internal server error occurred.",
+    ), 500
+
+
+# =========================================================
+# FLASK THREAD
+# =========================================================
+
+def run_web():
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=False,
+        use_reloader=False,
+    )
+
+
+# =========================================================
+# STARTUP
+# =========================================================
+
+async def start():
     init_db()
 
-    flask_thread = threading.Thread(target=start_flask, daemon=True)
-    flask_thread.start()
+    web_thread = threading.Thread(
+        target=run_web,
+        daemon=True,
+    )
 
-    bot.run(TOKEN)
+    web_thread.start()
+
+    await bot.start(
+        TOKEN
+    )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(
+            start()
+        )
+
+    except KeyboardInterrupt:
+        print(
+            "[Guardian] Shutdown requested."
+        )
