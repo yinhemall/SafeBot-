@@ -1,40 +1,74 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Guardian{% endblock %}</title>
-    <meta name="theme-color" content="#0b0b10">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-</head>
-<body>
-    <div class="bg-orb orb-one"></div>
-    <div class="bg-orb orb-two"></div>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <header class="nav">
+    <title>{% block title %}Guardian{% endblock %}</title>
+
+    <meta
+        name="description"
+        content="Guardian is a modern Discord security and moderation dashboard."
+    >
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
+</head>
+
+<body>
+
+<nav class="navbar">
+    <div class="navbar-inner">
+
         <a href="{{ url_for('index') }}" class="brand">
             <span class="brand-mark">G</span>
             <span>Guardian</span>
         </a>
-        <div class="nav-actions">
-            {% if user %}
-                <span class="user-chip">
-                    {{ user.get("global_name") or user.get("username") }}
-                </span>
-                <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
+
+        <div class="nav-links">
+
+            <a href="{{ url_for('index') }}">Home</a>
+
+            {% if session.get("user") %}
+                <a href="{{ url_for('dashboard') }}">Dashboard</a>
+
+                <a href="{{ url_for('logout') }}" class="nav-logout">
+                    Logout
+                </a>
             {% else %}
-                <a class="nav-link" href="{{ url_for('login') }}">Login</a>
+                <a href="{{ url_for('login') }}" class="btn btn-small">
+                    Login with Discord
+                </a>
             {% endif %}
+
         </div>
-    </header>
 
-    <main class="container">
-        {% block content %}{% endblock %}
-    </main>
+    </div>
+</nav>
 
-    <footer class="footer">
-        <span>Guardian</span>
-        <span>Security-first Discord moderation</span>
-    </footer>
+
+<main>
+    {% block content %}
+    {% endblock %}
+</main>
+
+
+<footer class="site-footer">
+    <div class="container footer-inner">
+
+        <div>
+            <strong>Guardian</strong>
+            <span>Discord Security</span>
+        </div>
+
+        <div>
+            Guardian • Security first
+        </div>
+
+    </div>
+</footer>
+
 </body>
 </html>
