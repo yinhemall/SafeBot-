@@ -1,154 +1,271 @@
 {% extends "base.html" %}
-{% block title %}{{ guild.get("name") }} — Guardian{% endblock %}
+
+{% block title %}{{ guild.name }} • Guardian{% endblock %}
+
 {% block content %}
 
-<div class="dashboard-head">
-    <div>
-        <a class="back-link" href="{{ url_for('index') }}">← All servers</a>
-        <div class="server-title">
-            <div class="server-icon large">
-                {% if guild.get("icon") %}
-                    <img src="https://cdn.discordapp.com/icons/{{ guild['id'] }}/{{ guild['icon'] }}.png?size=256" alt="">
+<section class="server-page">
+
+    <div class="container">
+
+        <div class="server-topbar">
+
+            <a
+                href="{{ url_for('dashboard') }}"
+                class="back-link"
+            >
+                ← Dashboard
+            </a>
+
+        </div>
+
+
+        <div class="server-heading">
+
+            <div class="server-large-icon">
+
+                {% if guild.icon %}
+
+                    <img
+                        src="https://cdn.discordapp.com/icons/{{ guild.id }}/{{ guild.icon }}.png?size=256"
+                        alt="{{ guild.name }}"
+                    >
+
                 {% else %}
-                    <span>{{ guild.get("name","G")[:1] }}</span>
+
+                    <span>
+                        {{ guild.name[0]|upper }}
+                    </span>
+
                 {% endif %}
+
             </div>
+
+
             <div>
-                <div class="eyebrow">SERVER CONTROL CENTER</div>
-                <h1>{{ guild.get("name") }}</h1>
+
+                <span class="eyebrow">
+                    SERVER SECURITY
+                </span>
+
+                <h1>
+                    {{ guild.name }}
+                </h1>
+
+                <p>
+                    Configure Guardian's security system.
+                </p>
+
             </div>
+
         </div>
+
+
+        <div class="settings-grid">
+
+            <div class="settings-card">
+
+                <div class="settings-card-header">
+
+                    <div>
+                        <span class="card-label">
+                            AUTOMOD
+                        </span>
+
+                        <h2>Security Protection</h2>
+                    </div>
+
+                    <span class="status-dot"></span>
+
+                </div>
+
+
+                <div class="setting-row">
+
+                    <div>
+                        <strong>Anti-Spam</strong>
+
+                        <p>
+                            Detect repeated messages and automatically
+                            protect the server.
+                        </p>
+                    </div>
+
+                    <span class="setting-status">
+                        Active
+                    </span>
+
+                </div>
+
+
+                <div class="setting-row">
+
+                    <div>
+                        <strong>Anti-Link</strong>
+
+                        <p>
+                            Detect suspicious links sent in the server.
+                        </p>
+                    </div>
+
+                    <span class="setting-status">
+                        Active
+                    </span>
+
+                </div>
+
+
+                <div class="setting-row">
+
+                    <div>
+                        <strong>Automatic Timeout</strong>
+
+                        <p>
+                            Temporarily restrict users detected
+                            by the anti-spam system.
+                        </p>
+                    </div>
+
+                    <span class="setting-status">
+                        Active
+                    </span>
+
+                </div>
+
+            </div>
+
+
+            <div class="settings-card">
+
+                <div class="settings-card-header">
+
+                    <div>
+                        <span class="card-label">
+                            LOGGING
+                        </span>
+
+                        <h2>Security Logs</h2>
+                    </div>
+
+                </div>
+
+
+                <div class="setting-row">
+
+                    <div>
+                        <strong>Moderation Logs</strong>
+
+                        <p>
+                            Record moderation actions performed
+                            by Guardian.
+                        </p>
+                    </div>
+
+                    <span class="setting-status">
+                        Enabled
+                    </span>
+
+                </div>
+
+
+                <div class="setting-row">
+
+                    <div>
+                        <strong>Security Events</strong>
+
+                        <p>
+                            Record anti-spam and anti-link events.
+                        </p>
+                    </div>
+
+                    <span class="setting-status">
+                        Enabled
+                    </span>
+
+                </div>
+
+            </div>
+
+
+            <div class="settings-card">
+
+                <div class="settings-card-header">
+
+                    <div>
+                        <span class="card-label">
+                            MODERATION
+                        </span>
+
+                        <h2>Moderation Tools</h2>
+                    </div>
+
+                </div>
+
+
+                <div class="command-list">
+
+                    <div class="command-row">
+                        <code>/warn</code>
+                        <span>Warn a member</span>
+                    </div>
+
+                    <div class="command-row">
+                        <code>/warnings</code>
+                        <span>View warnings</span>
+                    </div>
+
+                    <div class="command-row">
+                        <code>/timeout</code>
+                        <span>Timeout a member</span>
+                    </div>
+
+                    <div class="command-row">
+                        <code>/kick</code>
+                        <span>Remove a member</span>
+                    </div>
+
+                    <div class="command-row">
+                        <code>/ban</code>
+                        <span>Ban a member</span>
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <div class="settings-card">
+
+                <div class="settings-card-header">
+
+                    <div>
+                        <span class="card-label">
+                            SERVER
+                        </span>
+
+                        <h2>Server Controls</h2>
+                    </div>
+
+                </div>
+
+
+                <div class="server-actions">
+
+                    <a
+                        href="{{ url_for('server_settings', guild_id=guild.id) }}"
+                        class="btn"
+                    >
+                        Security Settings
+                    </a>
+
+                </div>
+
+            </div>
+
+        </div>
+
     </div>
-</div>
 
-{% if saved %}
-<div class="notice success-notice">
-    <strong>Saved.</strong> Guardian security settings were updated.
-</div>
-{% endif %}
-
-<form method="post" class="dashboard-grid">
-
-    <section class="panel">
-        <div class="panel-head">
-            <div>
-                <div class="eyebrow">AUTOMODATION</div>
-                <h2>Security controls</h2>
-            </div>
-            <span class="status-dot"></span>
-        </div>
-
-        <label class="toggle-row">
-            <div>
-                <strong>Anti-spam</strong>
-                <span>Detect message bursts and automatically timeout repeat spammers.</span>
-            </div>
-            <input type="checkbox" name="anti_spam" {% if settings["anti_spam"] %}checked{% endif %}>
-            <span class="toggle-ui"></span>
-        </label>
-
-        <label class="toggle-row">
-            <div>
-                <strong>Anti-link</strong>
-                <span>Remove links and Discord invite URLs from normal messages.</span>
-            </div>
-            <input type="checkbox" name="anti_links" {% if settings["anti_links"] %}checked{% endif %}>
-            <span class="toggle-ui"></span>
-        </label>
-
-        <label class="toggle-row danger-toggle">
-            <div>
-                <strong>Lockdown flag</strong>
-                <span>Marks the server as being in security lockdown mode.</span>
-            </div>
-            <input type="checkbox" name="lockdown" {% if settings["lockdown"] %}checked{% endif %}>
-            <span class="toggle-ui"></span>
-        </label>
-    </section>
-
-    <section class="panel">
-        <div class="panel-head">
-            <div>
-                <div class="eyebrow">DETECTION</div>
-                <h2>Anti-spam tuning</h2>
-            </div>
-        </div>
-
-        <div class="field-grid">
-            <label class="field">
-                <span>Messages before trigger</span>
-                <input type="number" min="3" max="20" name="spam_limit" value="{{ settings['spam_limit'] }}">
-                <small>3–20 messages</small>
-            </label>
-
-            <label class="field">
-                <span>Detection window</span>
-                <input type="number" min="3" max="30" name="spam_window" value="{{ settings['spam_window'] }}">
-                <small>3–30 seconds</small>
-            </label>
-
-            <label class="field">
-                <span>Automatic timeout</span>
-                <input type="number" min="1" max="60" name="timeout_minutes" value="{{ settings['timeout_minutes'] }}">
-                <small>1–60 minutes</small>
-            </label>
-        </div>
-    </section>
-
-    <section class="panel">
-        <div class="panel-head">
-            <div>
-                <div class="eyebrow">AUDIT</div>
-                <h2>Log channel</h2>
-            </div>
-        </div>
-
-        <label class="field">
-            <span>Security & moderation logs</span>
-            <select name="log_channel_id">
-                <option value="">Not configured</option>
-                {% for channel in channels %}
-                    <option value="{{ channel.id }}"
-                        {% if settings["log_channel_id"] == channel.id %}selected{% endif %}>
-                        #{{ channel.name }}
-                    </option>
-                {% endfor %}
-            </select>
-            <small>Guardian will send moderation and security events here.</small>
-        </label>
-    </section>
-
-    <section class="panel panel-highlight">
-        <div class="panel-head">
-            <div>
-                <div class="eyebrow">COMMANDS</div>
-                <h2>Useful slash commands</h2>
-            </div>
-        </div>
-
-        <div class="command-grid">
-            <code>/help</code>
-            <code>/security</code>
-            <code>/setsecurity</code>
-            <code>/setlog</code>
-            <code>/ban</code>
-            <code>/kick</code>
-            <code>/timeout</code>
-            <code>/warn</code>
-            <code>/clear</code>
-            <code>/lock</code>
-            <code>/unlock</code>
-            <code>/userinfo</code>
-        </div>
-    </section>
-
-    <div class="save-bar">
-        <div>
-            <strong>Guardian Security</strong>
-            <span>Changes apply to this server only.</span>
-        </div>
-        <button class="button button-primary" type="submit">Save changes <span>→</span></button>
-    </div>
-</form>
+</section>
 
 {% endblock %}
