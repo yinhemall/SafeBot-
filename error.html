@@ -1,11 +1,53 @@
 {% extends "base.html" %}
-{% block title %}{{ title }} — Guardian{% endblock %}
+
+{% block title %}Error • Guardian{% endblock %}
+
 {% block content %}
-<section class="empty error-page">
-    <div class="empty-icon">!</div>
-    <div class="eyebrow">GUARDIAN</div>
-    <h1>{{ title }}</h1>
-    <p>{{ message }}</p>
-    <a class="button button-primary" href="{{ url_for('index') }}">Return home <span>→</span></a>
+
+<section class="error-page">
+
+    <div class="container">
+
+        <div class="error-card">
+
+            <span class="eyebrow">
+                ERROR
+            </span>
+
+            <h1>
+                Something went wrong.
+            </h1>
+
+            <p>
+                {{ message or "An unexpected error occurred." }}
+            </p>
+
+            <div class="error-actions">
+
+                <a
+                    href="{{ url_for('index') }}"
+                    class="btn"
+                >
+                    Return Home
+                </a>
+
+                {% if session.get("user") %}
+
+                <a
+                    href="{{ url_for('dashboard') }}"
+                    class="btn btn-secondary"
+                >
+                    Dashboard
+                </a>
+
+                {% endif %}
+
+            </div>
+
+        </div>
+
+    </div>
+
 </section>
+
 {% endblock %}
