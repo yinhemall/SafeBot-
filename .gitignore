@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+guardian.db
+
+.vscode/
+.idea/
+
+.pytest_cache/
+
+*.log
