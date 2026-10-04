@@ -1,126 +1,194 @@
 {% extends "base.html" %}
-{% block title %}Guardian — Discord Security{% endblock %}
+
+{% block title %}Guardian — Discord Security Bot{% endblock %}
+
 {% block content %}
 
 <section class="hero">
-    <div class="eyebrow">DISCORD SECURITY • MODERATION • CONTROL</div>
-    <h1>Make your server feel<br><span>protected by design.</span></h1>
-    <p class="hero-copy">
-        Guardian is a security-first Discord bot with polished moderation tools,
-        automatic protection, clean logs and a premium dark dashboard.
-    </p>
+    <div class="eyebrow">GUARDIAN • DISCORD SECURITY</div>
 
-    {% if not user %}
-        <a class="button button-primary" href="{{ url_for('login') }}">
-            Continue with Discord
-            <span>→</span>
-        </a>
-    {% else %}
-        <div class="hero-user">
-            <div class="avatar">
-                {% if user.get("avatar") %}
-                    <img src="https://cdn.discordapp.com/avatars/{{ user['id'] }}/{{ user['avatar'] }}.png?size=128" alt="">
-                {% else %}
-                    <span>{{ (user.get("global_name") or user.get("username","G"))[:1] }}</span>
-                {% endif %}
-            </div>
-            <div>
-                <small>SIGNED IN AS</small>
-                <strong>{{ user.get("global_name") or user.get("username") }}</strong>
-            </div>
-        </div>
-    {% endif %}
+    <h1>
+        Security for your
+        <span>Discord server.</span>
+    </h1>
+
+    <p class="hero-copy">
+        Guardian is a security-focused Discord bot built to protect,
+        moderate and monitor your server with simple commands and
+        automatic protection.
+    </p>
 </section>
+
 
 <section class="section">
     <div class="section-heading">
         <div>
-            <div class="eyebrow">CONTROL CENTER</div>
-            <h2>Your servers</h2>
+            <div class="eyebrow">FEATURES</div>
+            <h2>What Guardian does.</h2>
         </div>
-        {% if user %}
-            <span class="muted">{{ guilds|length }} manageable server(s)</span>
-        {% endif %}
     </div>
 
-    {% if user %}
-        {% if guilds %}
-            <div class="server-grid">
-                {% for g in guilds %}
-                    <a class="server-card {% if not g.bot_present %}disabled{% endif %}"
-                       href="{% if g.bot_present %}{{ url_for('server_dashboard', guild_id=g['id']) }}{% else %}#{% endif %}">
-                        <div class="server-icon">
-                            {% if g.get("icon") %}
-                                <img src="https://cdn.discordapp.com/icons/{{ g['id'] }}/{{ g['icon'] }}.png?size=128" alt="">
-                            {% else %}
-                                <span>{{ g.get("name","G")[:1] }}</span>
-                            {% endif %}
-                        </div>
-                        <div class="server-info">
-                            <strong>{{ g.get("name") }}</strong>
-                            <span>
-                                {% if g.bot_present %}
-                                    Ready to configure
-                                {% else %}
-                                    Guardian not installed
-                                {% endif %}
-                            </span>
-                        </div>
-                        <div class="server-arrow">↗</div>
-                    </a>
-                {% endfor %}
-            </div>
-        {% else %}
-            <div class="empty">
-                <div class="empty-icon">◇</div>
-                <h3>No manageable servers</h3>
-                <p>Your Discord account needs owner/admin access on a server for it to appear here.</p>
-            </div>
-        {% endif %}
-    {% else %}
-        <div class="feature-grid">
-            <div class="feature-card">
-                <span>01</span>
-                <h3>Security</h3>
-                <p>Anti-spam, anti-link, automatic timeouts and lockdown tools.</p>
-            </div>
-            <div class="feature-card">
-                <span>02</span>
-                <h3>Moderation</h3>
-                <p>Ban, kick, timeout, warnings, message clearing and channel locks.</p>
-            </div>
-            <div class="feature-card">
-                <span>03</span>
-                <h3>Premium UI</h3>
-                <p>Dark, minimal dashboard and polished Discord embeds throughout.</p>
-            </div>
+    <div class="feature-grid feature-grid-large">
+
+        <div class="feature-card">
+            <span>01 / SECURITY</span>
+            <h3>Anti-Spam</h3>
+            <p>
+                Detects rapid message activity and can automatically
+                timeout users who repeatedly spam.
+            </p>
         </div>
-    {% endif %}
+
+        <div class="feature-card">
+            <span>02 / SECURITY</span>
+            <h3>Anti-Link</h3>
+            <p>
+                Detect unwanted external links and Discord invites
+                and remove them automatically.
+            </p>
+        </div>
+
+        <div class="feature-card">
+            <span>03 / MODERATION</span>
+            <h3>Moderation</h3>
+            <p>
+                Ban, kick, timeout, warn and clear messages directly
+                through Discord slash commands.
+            </p>
+        </div>
+
+        <div class="feature-card">
+            <span>04 / LOGGING</span>
+            <h3>Security Logs</h3>
+            <p>
+                Record important moderation and security events
+                inside a dedicated Discord log channel.
+            </p>
+        </div>
+
+        <div class="feature-card">
+            <span>05 / LOCKDOWN</span>
+            <h3>Server Lockdown</h3>
+            <p>
+                Quickly lock a channel or activate security lockdown
+                when your server needs immediate protection.
+            </p>
+        </div>
+
+        <div class="feature-card">
+            <span>06 / WARNINGS</span>
+            <h3>Warning System</h3>
+            <p>
+                Keep track of user warnings and manage moderation
+                actions directly from Discord.
+            </p>
+        </div>
+
+    </div>
 </section>
+
+
+<section class="section">
+    <div class="section-heading">
+        <div>
+            <div class="eyebrow">COMMANDS</div>
+            <h2>Built around Discord.</h2>
+        </div>
+    </div>
+
+    <div class="command-showcase">
+
+        <div class="command-row">
+            <code>/help</code>
+            <span>View all available Guardian commands.</span>
+        </div>
+
+        <div class="command-row">
+            <code>/security</code>
+            <span>View the current security configuration.</span>
+        </div>
+
+        <div class="command-row">
+            <code>/ban</code>
+            <span>Ban a member from the server.</span>
+        </div>
+
+        <div class="command-row">
+            <code>/kick</code>
+            <span>Remove a member from the server.</span>
+        </div>
+
+        <div class="command-row">
+            <code>/timeout</code>
+            <span>Temporarily restrict a member.</span>
+        </div>
+
+        <div class="command-row">
+            <code>/warn</code>
+            <span>Give and track moderation warnings.</span>
+        </div>
+
+        <div class="command-row">
+            <code>/clear</code>
+            <span>Remove messages from a channel.</span>
+        </div>
+
+        <div class="command-row">
+            <code>/lock</code>
+            <span>Lock a channel for security purposes.</span>
+        </div>
+
+    </div>
+</section>
+
 
 <section class="section split">
+
     <div>
         <div class="eyebrow">DISCORD NATIVE</div>
-        <h2>Clean everywhere.</h2>
+
+        <h2>
+            Designed for
+            <span>Discord.</span>
+        </h2>
+
         <p class="muted large">
-            Guardian leans into Discord-native formatting instead of fighting it:
-            embeds, mentions, code blocks, spoilers, timestamps and clean audit-style events.
+            Guardian uses Discord slash commands, embeds, timestamps,
+            mentions, permissions and moderation tools to keep
+            everything inside Discord.
         </p>
     </div>
-    <div class="code-panel">
-        <div class="code-top"><span></span><span></span><span></span></div>
-        <pre><code>**Bold**
-*Italic*
-__Underline__
-~~Strike~~
-||Spoiler||
 
-```py
-print("Guardian")
-```
+    <div class="feature-card feature-summary">
 
-&lt;t:1728000000:R&gt;</code></pre>
+        <div class="summary-line">
+            <strong>Security</strong>
+            <span>Anti-spam · Anti-link</span>
+        </div>
+
+        <div class="summary-line">
+            <strong>Moderation</strong>
+            <span>Ban · Kick · Timeout · Warn</span>
+        </div>
+
+        <div class="summary-line">
+            <strong>Protection</strong>
+            <span>Lockdown · Logs</span>
+        </div>
+
+        <div class="summary-line">
+            <strong>Commands</strong>
+            <span>Slash commands</span>
+        </div>
+
     </div>
+
 </section>
+
+
+<footer class="site-footer">
+    <span>GUARDIAN</span>
+    <span>Security first.</span>
+</footer>
 
 {% endblock %}
