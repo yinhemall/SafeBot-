@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Guardian{% endblock %}
+{% block content %}
+<section class="empty error-page">
+    <div class="empty-icon">!</div>
+    <div class="eyebrow">GUARDIAN</div>
+    <h1>{{ title }}</h1>
+    <p>{{ message }}</p>
+    <a class="button button-primary" href="{{ url_for('index') }}">Return home <span>→</span></a>
+</section>
+{% endblock %}

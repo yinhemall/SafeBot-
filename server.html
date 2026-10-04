@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}{{ guild.get("name") }} — Guardian{% endblock %}
+{% block content %}
+
+<div class="dashboard-head">
+    <div>
+        <a class="back-link" href="{{ url_for('index') }}">← All servers</a>
+        <div class="server-title">
+            <div class="server-icon large">
+                {% if guild.get("icon") %}
+                    <img src="https://cdn.discordapp.com/icons/{{ guild['id'] }}/{{ guild['icon'] }}.png?size=256" alt="">
+                {% else %}
+                    <span>{{ guild.get("name","G")[:1] }}</span>
+                {% endif %}
+            </div>
+            <div>
+                <div class="eyebrow">SERVER CONTROL CENTER</div>
+                <h1>{{ guild.get("name") }}</h1>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if saved %}
+<div class="notice success-notice">
+    <strong>Saved.</strong> Guardian security settings were updated.
+</div>
+{% endif %}
+
+<form method="post" class="dashboard-grid">
+
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <div class="eyebrow">AUTOMODATION</div>
+                <h2>Security controls</h2>
+            </div>
+            <span class="status-dot"></span>
+        </div>
+
+        <label class="toggle-row">
+            <div>
+                <strong>Anti-spam</strong>
+                <span>Detect message bursts and automatically timeout repeat spammers.</span>
+            </div>
+            <input type="checkbox" name="anti_spam" {% if settings["anti_spam"] %}checked{% endif %}>
+            <span class="toggle-ui"></span>
+        </label>
+
+        <label class="toggle-row">
+            <div>
+                <strong>Anti-link</strong>
+                <span>Remove links and Discord invite URLs from normal messages.</span>
+            </div>
+            <input type="checkbox" name="anti_links" {% if settings["anti_links"] %}checked{% endif %}>
+            <span class="toggle-ui"></span>
+        </label>
+
+        <label class="toggle-row danger-toggle">
+            <div>
+                <strong>Lockdown flag</strong>
+                <span>Marks the server as being in security lockdown mode.</span>
+            </div>
+            <input type="checkbox" name="lockdown" {% if settings["lockdown"] %}checked{% endif %}>
+            <span class="toggle-ui"></span>
+        </label>
+    </section>
+
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <div class="eyebrow">DETECTION</div>
+                <h2>Anti-spam tuning</h2>
+            </div>
+        </div>
+
+        <div class="field-grid">
+            <label class="field">
+                <span>Messages before trigger</span>
+                <input type="number" min="3" max="20" name="spam_limit" value="{{ settings['spam_limit'] }}">
+                <small>3–20 messages</small>
+            </label>
+
+            <label class="field">
+                <span>Detection window</span>
+                <input type="number" min="3" max="30" name="spam_window" value="{{ settings['spam_window'] }}">
+                <small>3–30 seconds</small>
+            </label>
+
+            <label class="field">
+                <span>Automatic timeout</span>
+                <input type="number" min="1" max="60" name="timeout_minutes" value="{{ settings['timeout_minutes'] }}">
+                <small>1–60 minutes</small>
+            </label>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-head">
+            <div>
+                <div class="eyebrow">AUDIT</div>
+                <h2>Log channel</h2>
+            </div>
+        </div>
+
+        <label class="field">
+            <span>Security & moderation logs</span>
+            <select name="log_channel_id">
+                <option value="">Not configured</option>
+                {% for channel in channels %}
+                    <option value="{{ channel.id }}"
+                        {% if settings["log_channel_id"] == channel.id %}selected{% endif %}>
+                        #{{ channel.name }}
+                    </option>
+                {% endfor %}
+            </select>
+            <small>Guardian will send moderation and security events here.</small>
+        </label>
+    </section>
+
+    <section class="panel panel-highlight">
+        <div class="panel-head">
+            <div>
+                <div class="eyebrow">COMMANDS</div>
+                <h2>Useful slash commands</h2>
+            </div>
+        </div>
+
+        <div class="command-grid">
+            <code>/help</code>
+            <code>/security</code>
+            <code>/setsecurity</code>
+            <code>/setlog</code>
+            <code>/ban</code>
+            <code>/kick</code>
+            <code>/timeout</code>
+            <code>/warn</code>
+            <code>/clear</code>
+            <code>/lock</code>
+            <code>/unlock</code>
+            <code>/userinfo</code>
+        </div>
+    </section>
+
+    <div class="save-bar">
+        <div>
+            <strong>Guardian Security</strong>
+            <span>Changes apply to this server only.</span>
+        </div>
+        <button class="button button-primary" type="submit">Save changes <span>→</span></button>
+    </div>
+</form>
+
+{% endblock %}

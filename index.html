@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Guardian — Discord Security{% endblock %}
+{% block content %}
+
+<section class="hero">
+    <div class="eyebrow">DISCORD SECURITY • MODERATION • CONTROL</div>
+    <h1>Make your server feel<br><span>protected by design.</span></h1>
+    <p class="hero-copy">
+        Guardian is a security-first Discord bot with polished moderation tools,
+        automatic protection, clean logs and a premium dark dashboard.
+    </p>
+
+    {% if not user %}
+        <a class="button button-primary" href="{{ url_for('login') }}">
+            Continue with Discord
+            <span>→</span>
+        </a>
+    {% else %}
+        <div class="hero-user">
+            <div class="avatar">
+                {% if user.get("avatar") %}
+                    <img src="https://cdn.discordapp.com/avatars/{{ user['id'] }}/{{ user['avatar'] }}.png?size=128" alt="">
+                {% else %}
+                    <span>{{ (user.get("global_name") or user.get("username","G"))[:1] }}</span>
+                {% endif %}
+            </div>
+            <div>
+                <small>SIGNED IN AS</small>
+                <strong>{{ user.get("global_name") or user.get("username") }}</strong>
+            </div>
+        </div>
+    {% endif %}
+</section>
+
+<section class="section">
+    <div class="section-heading">
+        <div>
+            <div class="eyebrow">CONTROL CENTER</div>
+            <h2>Your servers</h2>
+        </div>
+        {% if user %}
+            <span class="muted">{{ guilds|length }} manageable server(s)</span>
+        {% endif %}
+    </div>
+
+    {% if user %}
+        {% if guilds %}
+            <div class="server-grid">
+                {% for g in guilds %}
+                    <a class="server-card {% if not g.bot_present %}disabled{% endif %}"
+                       href="{% if g.bot_present %}{{ url_for('server_dashboard', guild_id=g['id']) }}{% else %}#{% endif %}">
+                        <div class="server-icon">
+                            {% if g.get("icon") %}
+                                <img src="https://cdn.discordapp.com/icons/{{ g['id'] }}/{{ g['icon'] }}.png?size=128" alt="">
+                            {% else %}
+                                <span>{{ g.get("name","G")[:1] }}</span>
+                            {% endif %}
+                        </div>
+                        <div class="server-info">
+                            <strong>{{ g.get("name") }}</strong>
+                            <span>
+                                {% if g.bot_present %}
+                                    Ready to configure
+                                {% else %}
+                                    Guardian not installed
+                                {% endif %}
+                            </span>
+                        </div>
+                        <div class="server-arrow">↗</div>
+                    </a>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty">
+                <div class="empty-icon">◇</div>
+                <h3>No manageable servers</h3>
+                <p>Your Discord account needs owner/admin access on a server for it to appear here.</p>
+            </div>
+        {% endif %}
+    {% else %}
+        <div class="feature-grid">
+            <div class="feature-card">
+                <span>01</span>
+                <h3>Security</h3>
+                <p>Anti-spam, anti-link, automatic timeouts and lockdown tools.</p>
+            </div>
+            <div class="feature-card">
+                <span>02</span>
+                <h3>Moderation</h3>
+                <p>Ban, kick, timeout, warnings, message clearing and channel locks.</p>
+            </div>
+            <div class="feature-card">
+                <span>03</span>
+                <h3>Premium UI</h3>
+                <p>Dark, minimal dashboard and polished Discord embeds throughout.</p>
+            </div>
+        </div>
+    {% endif %}
+</section>
+
+<section class="section split">
+    <div>
+        <div class="eyebrow">DISCORD NATIVE</div>
+        <h2>Clean everywhere.</h2>
+        <p class="muted large">
+            Guardian leans into Discord-native formatting instead of fighting it:
+            embeds, mentions, code blocks, spoilers, timestamps and clean audit-style events.
+        </p>
+    </div>
+    <div class="code-panel">
+        <div class="code-top"><span></span><span></span><span></span></div>
+        <pre><code>**Bold**
+*Italic*
+__Underline__
+~~Strike~~
+||Spoiler||
+
+```py
+print("Guardian")
+```
+
+&lt;t:1728000000:R&gt;</code></pre>
+    </div>
+</section>
+
+{% endblock %}
